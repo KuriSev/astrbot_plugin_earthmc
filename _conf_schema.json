@@ -1,0 +1,58 @@
+{
+  "cache_ttl": {
+    "description": "API 缓存时间（毫秒）",
+    "type": "int",
+    "default": 30000,
+    "hint": "GET 请求缓存有效期。增大可减少 API 调用次数，但数据更新会变慢"
+  },
+  "http_timeout": {
+    "description": "HTTP 请求超时（毫秒）",
+    "type": "int",
+    "default": 10000,
+    "hint": "API 请求超时时间"
+  },
+  "watch_interval": {
+    "description": "监控轮询间隔（毫秒）",
+    "type": "int",
+    "default": 20000,
+    "hint": "VP/玩家/城镇监控的检查间隔。过短可能触发 API 限流"
+  },
+  "town_check_interval": {
+    "description": "城镇检查间隔（次数）",
+    "type": "int",
+    "default": 3,
+    "hint": "城镇变动监控每 N 次轮询才检查一次。实际间隔 = 轮询间隔 × 此次数"
+  },
+  "scan_batch_size": {
+    "description": "全服扫描批处理大小",
+    "type": "int",
+    "default": 100,
+    "hint": "每次 API 请求查询的城镇/玩家数量"
+  },
+  "scan_concurrency": {
+    "description": "全服扫描并发数",
+    "type": "int",
+    "default": 5,
+    "hint": "并发 API 请求数。过大会触发限流"
+  },
+  "deep_scan_max_residents": {
+    "description": "深度扫描居民数上限",
+    "type": "int",
+    "default": 10,
+    "hint": "居民数超过此值的城镇视为低风险，跳过逐人分析以加速扫描"
+  },
+  "scan_hour": {
+    "description": "每日自动扫描时间 - 时（系统时间）",
+    "type": "int",
+    "default": 18,
+    "hint": "全服销城扫描触发时间的小时数",
+    "options": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23"]
+  },
+  "scan_minute": {
+    "description": "每日自动扫描时间 - 分（系统时间）",
+    "type": "int",
+    "default": 30,
+    "hint": "全服销城扫描触发时间的分钟数",
+    "options": ["0", "5", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55"]
+  }
+}

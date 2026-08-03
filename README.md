@@ -1,14 +1,63 @@
-# astrbot-plugin-helloworld
+# AstrBot Plugin: EarthMC
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+EarthMC Minecraft 服务器信息查询插件。支持 `/em` 命令和 LLM Agent 自然语言两种交互方式。
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+## 功能
 
-# Supports
+- **服务器状态**: 在线人数、天气、月相、游戏时间
+- **城镇/国家/玩家**: 详细信息查询
+- **附近城镇**: 坐标周围领地分布
+- **在线列表**: 当前在线玩家
+- **Mystery Master**: 小游戏排行榜
+- **销城风险分析**: 单镇评估、国家排名、全服扫描
+- **自动监控**: VP 阈值提醒、玩家上下线、城镇变动
+- **市场交易**: 传送点交易信息板
+- **地图截图**: 城镇/玩家/坐标的地图截图
 
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+## 命令
+
+```
+查询:
+  /em status/vp/town/nation/player/online/nearby/location/quarter/mm
+
+地图:
+  /em map town <名>             城镇地图截图
+  /em map player <名>           玩家位置截图
+  /em map <x> <z>               坐标截图
+
+销城分析:
+  /em risk town <名> / nation <名> / list / scan
+
+监控:
+  /em watch vp <票数> / player add/del / town add/del / off
+
+市场:
+  /em market list / search / add / del
+```
+
+## 安装
+
+1. 放入 AstrBot `data/plugins/` 目录
+2. `docker restart astrbot`
+3. 如需地图截图功能: `docker exec astrbot pip install Pillow`
+
+## 配置
+
+WebUI → 插件管理 → EarthMC，可调 9 个配置项。
+
+## 数据
+
+| 文件 | 内容 |
+|------|------|
+| `earthmc_watch.json` | 监控配置 |
+| `earthmc_risk_scan.json` | 销城扫描结果 |
+| `earthmc_market.json` | 市场交易记录 |
+
+## 依赖
+
+- `aiohttp`（AstrBot 预装）
+- `Pillow`（可选，地图截图需要）
+
+## License
+
+AGPL-3.0
