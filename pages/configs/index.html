@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>设置</title>
+<style>
+:root { --bg:#fff; --card:#f7f8fa; --text:#1a1a1a; --border:#ddd; --accent:#4a90d9;
+        --danger:#d9534f; --ok:#5cb85c; --muted:#888; --input:#f0f0f0; }
+[data-theme="dark"] { --bg:#1a1a1a; --card:#242424; --text:#e0e0e0; --border:#444;
+        --accent:#6ab0f3; --danger:#e06c66; --ok:#7cc576; --muted:#999; --input:#2c2c2c; }
+* { box-sizing: border-box; }
+body { font-family: system-ui; background: var(--bg); color: var(--text); margin: 0; padding: 20px; }
+.header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.header h2 { margin: 0; flex: 1; }
+select, input, button { padding: 6px 10px; border: 1px solid var(--border);
+        border-radius: 4px; background: var(--input); color: var(--text); font-size: 13px; }
+button { cursor: pointer; background: var(--accent); color: #fff; border: none; }
+button.danger { background: var(--danger); }
+.section { margin-bottom: 16px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); }
+.section h3 { margin: 0 0 12px; font-size: 15px; }
+.toggle-row { display: flex; flex-wrap: wrap; gap: 14px; margin: 8px 0 12px; }
+.toggle-row label { display: flex; align-items: center; gap: 5px; cursor: pointer; min-width: auto; }
+.grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-top: 12px; }
+.card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--bg); }
+.card h4 { margin: 0 0 10px; font-size: 14px; }
+.row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.row .name { flex: 1; }
+.row .meta { color: var(--muted); font-size: 12px; }
+.xbtn { background: var(--danger); color: #fff; border: none; border-radius: 3px;
+        width: 22px; height: 22px; cursor: pointer; font-size: 12px; padding: 0; }
+.threshold-line { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; }
+.threshold-line input { flex: 1; }
+.addline { display: flex; gap: 6px; margin-top: 8px; }
+.addline input { flex: 1; }
+.empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+.msg { color: var(--ok); font-size: 13px; margin-left: 8px; }
+.msg.err { color: var(--danger); }
+.on { color: var(--ok); } .off { color: var(--muted); }
+.save-btn { margin-top: 8px; }
+@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h2>⚙️ 设置</h2>
+  <select id="configSelect"><option value="">-- 选择配置 --</option></select>
+  <button id="newBtn">新建</button>
+  <button id="delBtn" class="danger">删除</button>
+  <span id="msg" class="msg"></span>
+</div>
+
+<div class="section" id="editSection" style="display:none">
+  <h3>编辑 — <span id="editTitle"></span></h3>
+  <div class="row">
+    <label>类型:</label>
+    <select id="editType" style="min-width:100px"><option value="group">群聊</option><option value="friend">私聊</option></select>
+    <label>ID:</label>
+    <input type="text" id="editId" placeholder="QQ群号或QQ号" />
+  </div>
+</div>
+
+<div class="section" id="featureSection" style="display:none">
+  <h3>功能开关</h3>
+  <div class="toggle-row">
+    <label><input type="checkbox" id="featWatch" checked /> 监控</label>
+    <label><input type="checkbox" id="featMarket" checked /> 市场</label>
+    <label><input type="checkbox" id="featMap" checked /> 地图截图</label>
+    <label><input type="checkbox" id="featScanner" checked /> 销城扫描</label>
+    <label><input type="checkbox" id="featCommands" checked /> /em 命令</label>
+  </div>
+  <button id="saveFeatureBtn">保存功能开关</button>
+</div>
+
+<div class="section" id="watchSection" style="display:none">
+  <h3>监控设置</h3>
+  <div class="grid">
+    <div class="card">
+      <h4>🎯 VP 提醒</h4>
+      <div id="vpList"></div>
+      <div class="addline">
+        <input id="vpInput" type="number" placeholder="阈值" min="1" />
+        <button id="vpAdd">添加</button>
+      </div>
+      <button id="vpSave" class="save-btn" style="width:100%">保存全部阈值</button>
+    </div>
+    <div class="card">
+      <h4>👤 玩家监控</h4>
+      <div id="playerList"></div>
+      <div class="addline">
+        <input id="playerInput" placeholder="玩家名" />
+        <button id="playerAdd">添加</button>
+      </div>
+    </div>
+    <div class="card">
+      <h4>🏘 城镇监控</h4>
+      <div id="townList"></div>
+      <div class="addline">
+        <input id="townInput" placeholder="城镇名" />
+        <button id="townAdd">添加</button>
+      </div>
+    </div>
+  </div>
+  <div style="margin-top:12px">
+    <button id="offBtn" class="danger">关闭此配置全部监控</button>
+  </div>
+</div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

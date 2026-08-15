@@ -171,13 +171,7 @@ class WatchManager:
         changed = False
         for t in sorted(thresholds, reverse=True):
             if remaining <= t < vp_last:
-                pct = min(current / target * 100, 100)
-                msg = (
-                    f"🗳 VoteParty 提醒\n━━━━━━━━━━━━━━━━\n"
-                    f"⚠ 剩余票数降至 {remaining}，触发 {t} 票提醒线\n"
-                    f"🎯 进度: {current}/{target} ({pct:.1f}%)\n"
-                    f"━━━━━━━━━━━━━━━━\n使用 /em watch off 关闭提醒"
-                )
+                msg = f"🗳 VoteParty 剩余 {remaining} 票"
                 try:
                     await self._send(umo, MessageChain().message(msg))
                 except Exception as e:
@@ -345,14 +339,11 @@ class WatchManager:
 
             if msgs:
                 changed = True
-                for msg in msgs:
-                    try:
-                        await self._send(
-                            umo, MessageChain().message(
-                                f"🏘 城镇变动\n━━━━━━━━━━━━━━━━\n{msg}\n"
-                                f"━━━━━━━━━━━━━━━━\n使用 /em watch town del {name} 移除监控"))
-                    except Exception as e:
-                        logger.error(f"[EarthMC] Watch 城镇发送失败: {e}")
+                try:
+                    await self._send(
+                        umo, MessageChain().message("\n".join(msgs)))
+                except Exception as e:
+                    logger.error(f"[EarthMC] Watch 城镇发送失败: {e}")
 
         if changed:
             config = self.load_config()

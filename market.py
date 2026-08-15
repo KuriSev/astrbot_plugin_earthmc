@@ -112,6 +112,10 @@ class MarketManager:
     def list_all(self) -> list[dict]:
         return self.load()
 
+    def list_by_action(self, action: str) -> list[dict]:
+        """按类型列出（出售/收购/试炼）。"""
+        return [r for r in self.load() if r.get("action") == action]
+
 
 # ════════════════════════════════════════
 # LLM 工具
@@ -242,6 +246,90 @@ class MarketSearchTool(FunctionTool[AstrAgentContext]):
             lines.append(
                 f"  #{r['id']}  {r['type']}/{r['location']}  "
                 f"{r['action']}  {r['price']} × {r['amount']} {r['item']}  "
+                f"[{r.get('added_at', '?')}]"
+            )
+        return "\n".join(lines)
+
+
+# ════════════════════════════════════════
+# 试炼密室工具
+# ════════════════════════════════════════
+
+@dataclass
+class TrialAddTool(FunctionTool[AstrAgentContext]):
+    name: str = "earthmc_trial_add"
+    description: str = (
+        "记录哪个传送点有试炼密室/宝库/能够开试炼。"
+        "用户说'XX有试炼''XX能开宝库'时使用。需要传送点类型和名称。"
+    )
+    parameters: dict = field(default_factory=lambda: {
+        "type": "object",
+        "properties": {
+            "type": {
+                "type": "string",
+                "description": "传送点类型: t(城镇传送点) 或 n(国家传送点)",
+                "enum": ["t", "n"],
+            },
+            "location": {
+                "type": "string",
+                "description": "传送点名称。如 /t spawn mending 中的 mending",
+            },
+        },
+        "required": ["type", "location"],
+    })
+
+    async def call(self, context, **kwargs) -> str:
+        if _market is None:
+            return "❌ 市场功能未初始化。"
+
+        entry = {
+            "type": kwargs.get("type", "").lower(),
+            "location": (kwargs.get("location", "") or "").strip(),
+            "action": "试炼",
+            "item": "试炼密室",
+            "amount": 1,
+            "price": "",
+        }
+
+        if not entry["location"]:
+            return "❌ 请提供传送点名称。例如：mending 有试炼密室"
+        if entry["type"] not in ("t", "n"):
+            return "❌ 传送点类型必须是 t（城镇）或 n（国家）"
+
+        result = _market.add(entry)
+        eid = result["id"]
+        msg = (f"✅ 已记录 #{eid}  "
+               f"{entry['type']}/{entry['location']}  🏰 有试炼密室")
+        if result.get("dup_warn"):
+            msg += f"\n{result['dup_warn']}"
+        return msg
+
+
+@dataclass
+class TrialListTool(FunctionTool[AstrAgentContext]):
+    name: str = "earthmc_trial_list"
+    description: str = (
+        "查询所有记录了试炼密室/宝库的传送点列表。"
+        "可用于回答'哪里能开试炼''哪里有宝库''哪些传送点有试炼'等问题。"
+    )
+    parameters: dict = field(default_factory=lambda: {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    })
+
+    async def call(self, context, **kwargs) -> str:
+        if _market is None:
+            return "❌ 市场功能未初始化。"
+
+        results = _market.list_by_action("试炼")
+
+        if not results:
+            return "🏰 试炼密室记录: 暂无"
+        lines = [f"🏰 试炼密室记录 ({len(results)} 个)"]
+        for r in results:
+            lines.append(
+                f"  #{r['id']}  {r['type']}/{r['location']}  "
                 f"[{r.get('added_at', '?')}]"
             )
         return "\n".join(lines)

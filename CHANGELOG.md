@@ -1,5 +1,33 @@
 # Changelog
 
+## v1.13.1
+
+### 修复
+- WebUI 添加监控后 watch.json 缺少 `umo`，导致新群监控轮询被跳过；现按 `qq-bot:GroupMessage/FriendMessage:{id}` 格式自动补全
+
+## v1.13.0
+
+### 新增
+- **设置页面合并**：功能开关与监控设置（VP 阈值/玩家/城镇）整合为单一 Plugin Page
+- **Watch 管理 API**：`watch/groups`、`watch/status`、`watch/vp/save`、`watch/player/add/del`、`watch/town/add/del`、`watch/off`
+
+### 变更
+- 移除独立的 `pages/watch/` 页面，并入 `pages/configs/`
+
+## v1.12.1
+
+### 修复
+- **market add 解析**：`split(maxsplit=2)` 导致 `trial/sell/buy add` 丢失传送点后的参数
+- **map 坐标解析**：`/em map <x> <z>` 坐标被拆分导致截图失败
+
+## v1.12.0
+
+### 新增
+- **试炼密室记录**：`/em market trial add <t/n> <点>`，LLM 工具 `earthmc_trial_add` / `earthmc_trial_list`
+- **路径点记录**：`/em wp add <世界> <名称> <x> <y> <z>`，区分主世界/地狱（下界），LLM 工具 `earthmc_waypoint_add` / `earthmc_waypoint_search`
+- **市场分类型**：`/em market sell` / `buy` / `trial` 三类管理，命令可区分出售/收购
+- **WebUI 配置管理**：`pages/configs/` 按群/私聊独立管理功能开关
+
 ## v1.11.0
 
 ### 新增
