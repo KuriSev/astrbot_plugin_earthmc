@@ -13,6 +13,31 @@ from .api import get, post, ts_str, mc_time, moon, weather, bool_emoji
 INACTIVE_DAYS = 42  # 42 天不上线即 inactive → 被销城
 
 
+def _extract_discord(v) -> str:
+    """从 town/nation 的 discord 字段提取可显示的 Discord 链接/代码。"""
+    if isinstance(v, str):
+        return v.strip()
+    if isinstance(v, dict):
+        for k in ("invite", "code", "link", "url"):
+            val = v.get(k)
+            if val:
+                return str(val)
+    return ""
+
+
+def _names_list(v) -> list[str]:
+    """把 API 返回的列表（元素可能是 {name} dict 或 str）统一成名字列表。"""
+    out = []
+    for x in v or []:
+        if isinstance(x, dict):
+            nm = x.get("name")
+            if nm:
+                out.append(str(nm))
+        elif isinstance(x, str) and x.strip():
+            out.append(x.strip())
+    return out
+
+
 @dataclass
 class ServerStatusTool(FunctionTool[AstrAgentContext]):
     name: str = "earthmc_server_status"
@@ -48,11 +73,8 @@ class VotePartyTool(FunctionTool[AstrAgentContext]):
         vp = data.get("voteParty", {}); target = vp.get("target", 0) or 1
         current = target - vp.get("numRemaining", 0)
         pct = min(current / target * 100, 100)
-        bar = "█" * int(pct / 5) + "░" * (20 - int(pct / 5))
-        return (
-            f"🗳 VoteParty 进度\n━━━━━━━━━━━━━━━━\n"
-            f"[{bar}] {pct:.1f}%\n🎯 {current}/{target}  (还需 {vp.get('numRemaining','?')} 票)"
-        )
+        return (f"🗳 VoteParty: {current}/{target}（{pct:.0f}%）"
+                f"  还需 {vp.get('numRemaining','?')} 票")
 
 
 @dataclass
@@ -70,13 +92,19 @@ class TownTool(FunctionTool[AstrAgentContext]):
         stats = t.get("stats",{}) or {}; status = t.get("status",{}) or {}
         coord = (t.get("coordinates",{}) or {}).get("spawn", {})
         coord_str = f"({coord.get('x','?')}, {coord.get('z','?')})" if coord else "?"
+        warps = [w.get("name","?") if isinstance(w, dict) else w
+                 for w in (t.get("warps",[]) or [])]
+        discord_str = _extract_discord(t.get("discord"))
         return (
             f"🏘 {t.get('name','?')}  {coord_str}\n━━━━━━━━━━━━━━━━\n"
             f"👤 市长: {mayor.get('name','?')}\n🏰 国家: {nation.get('name','无')}\n"
             f"📝 公告: {t.get('board','无') or '无'}\n━━━━━━━━━━━━━━━━\n"
             f"👥 居民: {stats.get('numResidents','?')}  🔒 罪犯: {stats.get('numOutlaws','?')}\n"
             f"🧱 方块: {stats.get('numTownBlocks','?')}/{stats.get('maxTownBlocks','?')}  "
-            f"💰 {stats.get('balance','?')} G\n━━━━━━━━━━━━━━━━\n"
+            f"💰 {stats.get('balance','?')} G\n"
+            f"📍 传送点: {', '.join(warps[:8]) if warps else '无'}\n"
+            f"{'🔗 Discord: ' + discord_str + '\n' if discord_str else ''}"
+            f"━━━━━━━━━━━━━━━━\n"
             f"开放: {bool_emoji(status.get('isOpen'))}  公共: {bool_emoji(status.get('isPublic'))}  "
             f"首都: {bool_emoji(status.get('isCapital'))}\n"
             f"中立: {bool_emoji(status.get('isNeutral'))}  废墟: {bool_emoji(status.get('isRuined'))}  "
@@ -88,7 +116,7 @@ class TownTool(FunctionTool[AstrAgentContext]):
 @dataclass
 class NationTool(FunctionTool[AstrAgentContext]):
     name: str = "earthmc_nation"
-    description: str = "查询 EarthMC 上指定国家的详细信息：国王、首都、城镇列表、居民数、盟友、敌对国、余额等。"
+    description: str = "查询 EarthMC 上指定国家的详细信息：国王、首都、城镇列表、居民数、盟友、敌对国、国家加成(nation bonus)、禁运、条约、余额等。"
     parameters: dict = field(default_factory=lambda: {"type": "object", "properties": {"name": {"type": "string", "description": "国家名称"}}, "required": ["name"]})
 
     async def call(self, context, name: str = "", **kwargs) -> str:
@@ -103,14 +131,35 @@ class NationTool(FunctionTool[AstrAgentContext]):
         towns = [t.get("name","?") for t in (n.get("towns",[]) or [])]
         allies = [a.get("name","?") for a in (n.get("allies",[]) or [])]
         enemies = [e.get("name","?") for e in (n.get("enemies",[]) or [])]
+        nb = stats.get('nationBonus')
+        bonus_str = f"📦 国家加成: +{nb} 块" if nb is not None else "📦 国家加成: ?"
+        emb = n.get("embargoes") or {}
+        own_emb = _names_list(emb.get("own"))
+        against_emb = _names_list(emb.get("against"))
+        emb_parts = []
+        if own_emb:
+            emb_parts.append("我方:" + "、".join(own_emb[:6]))
+        if against_emb:
+            emb_parts.append("被:" + "、".join(against_emb[:6]))
+        emb_line = "；".join(emb_parts) if emb_parts else "无"
+        pact_names = []
+        for p in (n.get("pacts") or {}).get("active") or []:
+            if isinstance(p, dict):
+                pact_names.append(f"{p.get('sender','?')}↔{p.get('receiver','?')}")
+        discord_str = _extract_discord(n.get("discord"))
         return (
             f"🏰 {n.get('name','?')}  {coord_str}\n━━━━━━━━━━━━━━━━\n"
             f"👑 国王: {king.get('name','?')}\n🏛 首都: {capital.get('name','无')}\n"
             f"📝 公告: {n.get('board','无') or '无'}\n━━━━━━━━━━━━━━━━\n"
             f"🏘 城镇({stats.get('numTowns','?')}): {', '.join(towns[:12])}{'...' if len(towns) > 12 else ''}\n"
             f"👥 居民: {stats.get('numResidents','?')}  💰 {stats.get('balance','?')} G\n"
+            f"{bonus_str}\n"
             f"🤝 盟友: {', '.join(allies[:6]) if allies else '无'}\n"
-            f"⚔ 敌对: {', '.join(enemies[:6]) if enemies else '无'}\n━━━━━━━━━━━━━━━━\n"
+            f"⚔ 敌对: {', '.join(enemies[:6]) if enemies else '无'}\n"
+            f"🚫 禁运: {emb_line}\n"
+            f"📜 条约: {', '.join(pact_names[:6]) if pact_names else '无'}\n"
+            f"{'🔗 Discord: ' + discord_str + '\n' if discord_str else ''}"
+            f"━━━━━━━━━━━━━━━━\n"
             f"开放: {bool_emoji(status.get('isOpen'))}  公共: {bool_emoji(status.get('isPublic'))}  "
             f"中立: {bool_emoji(status.get('isNeutral'))}\n"
             f"🕐 注册: {ts_str(n.get('timestamps',{}).get('registered'))}"
@@ -165,12 +214,17 @@ class NearbyTownsTool(FunctionTool[AstrAgentContext]):
     async def call(self, context, town: str = "", **kwargs) -> str:
         town = (town or "").strip()
         if not town: return "❌ 请提供目标城镇名称。"
+        # 取服务端规范名用于显示（查询本身大小写不敏感）；取不到则退回用户输入
+        disp = town
+        tq = await post("/towns", {"query": [town]})
+        if isinstance(tq, list) and tq and isinstance(tq[0], dict) and tq[0].get("name"):
+            disp = tq[0]["name"]
         data = await post("/nearby", {"query": [{"target_type": "TOWN", "target": town, "search_type": "TOWN", "radius": 100}]})
-        if not data or not isinstance(data, list): return f"❌ 未找到「{town}」附近的城镇。"
+        if not data or not isinstance(data, list): return f"❌ 未找到「{disp}」附近的城镇。"
         nearby = data[0] if data else []
-        if not nearby: return f"🏘 「{town}」周围 100 格内没有其他城镇。"
+        if not nearby: return f"🏘 「{disp}」周围 100 格内没有其他城镇。"
         names = [t.get("name","?") for t in nearby[:30]]
-        return f"🏘 {town} 附近城镇 ({len(nearby)} 个)\n━━━━━━━━━━━━━━━━\n{', '.join(names)}{'...' if len(nearby) > 30 else ''}"
+        return f"🏘 {disp} 附近城镇 ({len(nearby)} 个)\n━━━━━━━━━━━━━━━━\n{', '.join(names)}{'...' if len(nearby) > 30 else ''}"
 
 
 @dataclass
@@ -694,14 +748,15 @@ class MapPlayerTool(FunctionTool[AstrAgentContext]):
         if not data or not isinstance(data, list) or len(data) == 0:
             return f"❌ 未找到玩家「{name}」。"
         town = (data[0].get("town") or {}).get("name", "")
+        disp = data[0].get("formattedName") or data[0].get("name") or name   # 服务端规范名
         if not town:
-            return (f"👤 {data[0].get('formattedName', name)} 为游民，"
+            return (f"👤 {disp} 为游民，"
                     f"且未在地图上暴露位置。")
 
         markers = await fetch_markers()
         marker = markers.get(town.lower())
         if not marker:
-            return f"👤 {name} 在城镇「{town}」中，但该城镇未在地图上标记。"
+            return f"👤 {disp} 在城镇「{town}」中，但该城镇未在地图上标记。"
 
         try:
             buf = await screenshot_area(
@@ -716,7 +771,7 @@ class MapPlayerTool(FunctionTool[AstrAgentContext]):
 
         cx = (marker["min_x"] + marker["max_x"]) // 2
         cz = (marker["min_z"] + marker["max_z"]) // 2
-        info = f"{name} 离线，展示所属城镇 {marker['name']}"
+        info = f"{disp} 离线，展示所属城镇 {marker['name']}"
         if marker["nation"]:
             info += f" ({marker['nation']})"
         return (f"🗺 {info}\n"

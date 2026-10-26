@@ -30,6 +30,12 @@ button.danger { background: var(--danger); }
         width: 22px; height: 22px; cursor: pointer; font-size: 12px; padding: 0; }
 .threshold-line { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; }
 .threshold-line input { flex: 1; }
+.threshold-line input[type="checkbox"] { flex: 0 0 20px; width: 20px; height: 20px; margin: 0; }
+.threshold-head { display: flex; gap: 6px; align-items: center;
+        color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.threshold-head .th-name { flex: 1; }
+.threshold-head .th-at { flex: 0 0 20px; text-align: center; cursor: help; }
+.threshold-head .th-x { flex: 0 0 22px; }
 .addline { display: flex; gap: 6px; margin-top: 8px; }
 .addline input { flex: 1; }
 .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
@@ -37,6 +43,13 @@ button.danger { background: var(--danger); }
 .msg.err { color: var(--danger); }
 .on { color: var(--ok); } .off { color: var(--muted); }
 .save-btn { margin-top: 8px; }
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45);
+        display: flex; align-items: center; justify-content: center; z-index: 100; }
+.modal { background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+        padding: 18px; width: 320px; max-width: 90vw; box-shadow: 0 4px 20px rgba(0,0,0,.3); }
+.modal h3 { margin: 0 0 12px; font-size: 15px; }
+.modal .msg { margin: 8px 0; white-space: pre-line; }
+#dirtyBadge { color: var(--danger); font-size: 13px; margin-left: 8px; }
 @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -48,15 +61,16 @@ button.danger { background: var(--danger); }
   <button id="newBtn">新建</button>
   <button id="delBtn" class="danger">删除</button>
   <span id="msg" class="msg"></span>
+  <span id="dirtyBadge" style="display:none">⚠ 未保存</span>
 </div>
 
 <div class="section" id="editSection" style="display:none">
   <h3>编辑 — <span id="editTitle"></span></h3>
   <div class="row">
     <label>类型:</label>
-    <select id="editType" style="min-width:100px"><option value="group">群聊</option><option value="friend">私聊</option></select>
+    <select id="editType" disabled style="min-width:100px"><option value="group">群聊</option><option value="friend">私聊</option></select>
     <label>ID:</label>
-    <input type="text" id="editId" placeholder="QQ群号或QQ号" />
+    <input type="text" id="editId" placeholder="QQ群号或QQ号" readonly />
   </div>
 </div>
 
@@ -72,18 +86,50 @@ button.danger { background: var(--danger); }
   <button id="saveFeatureBtn">保存功能开关</button>
 </div>
 
-<div class="section" id="watchSection" style="display:none">
-  <h3>监控设置</h3>
+<div class="section" id="vpSection" style="display:none">
+  <h3>🎯 VP 提醒</h3>
   <div class="grid">
     <div class="card">
-      <h4>🎯 VP 提醒</h4>
+      <h4>提醒线</h4>
+      <div class="threshold-head">
+        <span class="th-name">阈值</span>
+        <span class="th-at" title="勾选后该线触发时 @ 名单成员">@</span>
+        <span class="th-x"></span>
+      </div>
       <div id="vpList"></div>
       <div class="addline">
         <input id="vpInput" type="number" placeholder="阈值" min="1" />
         <button id="vpAdd">添加</button>
       </div>
-      <button id="vpSave" class="save-btn" style="width:100%">保存全部阈值</button>
     </div>
+    <div class="card">
+      <h4>📣 触发时 @</h4>
+      <div id="vpAtList"></div>
+      <div class="addline">
+        <input id="vpAtInput" type="number" placeholder="QQ 号" />
+        <button id="vpAtAdd">添加</button>
+      </div>
+    </div>
+    <div class="card">
+      <h4>🌙 免打扰 (UTC+8)</h4>
+      <div class="addline" style="flex-wrap:wrap">
+        <input id="vpDndStart" type="time" step="60" style="flex:none;width:110px" />
+        <span style="line-height:30px">至</span>
+        <input id="vpDndEnd" type="time" step="60" style="flex:none;width:110px" />
+        <button id="vpDndOff" class="xbtn" style="width:30px" title="清除免打扰">×</button>
+      </div>
+      <div class="empty" style="font-size:12px">免打扰时段内只发文本不 @</div>
+    </div>
+  </div>
+  <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+    <button id="vpSave">保存 VP 设置</button>
+    <button id="vpOffBtn" class="danger">清除提醒线</button>
+  </div>
+</div>
+
+<div class="section" id="watchSection" style="display:none">
+  <h3>👤 玩家 / 🏘 城镇监控</h3>
+  <div class="grid" style="grid-template-columns:1fr 1fr">
     <div class="card">
       <h4>👤 玩家监控</h4>
       <div id="playerList"></div>
@@ -102,7 +148,38 @@ button.danger { background: var(--danger); }
     </div>
   </div>
   <div style="margin-top:12px">
-    <button id="offBtn" class="danger">关闭此配置全部监控</button>
+    <button id="offBtn" class="danger">关闭玩家/城镇监控</button>
+  </div>
+</div>
+
+<div id="newModal" class="modal-overlay" style="display:none">
+  <div class="modal">
+    <h3>新建配置</h3>
+    <div class="row">
+      <label>类型:</label>
+      <select id="newType"><option value="group">群聊</option><option value="friend">私聊</option></select>
+    </div>
+    <div class="row">
+      <label>ID:</label>
+      <input type="text" id="newId" placeholder="QQ群号或QQ号" />
+    </div>
+    <div id="newMsg" class="msg"></div>
+    <div class="row">
+      <button id="newOk">创建</button>
+      <button id="newOpen" style="display:none">打开已有配置</button>
+      <button id="newCancel" class="danger">取消</button>
+    </div>
+  </div>
+</div>
+
+<div id="confirmModal" class="modal-overlay" style="display:none">
+  <div class="modal">
+    <h3>确认</h3>
+    <div id="confirmMsg" class="msg"></div>
+    <div class="row">
+      <button id="confirmOk" class="danger">确认</button>
+      <button id="confirmCancel">取消</button>
+    </div>
   </div>
 </div>
 

@@ -6,15 +6,57 @@ import asyncio
 import json
 import os
 import time
+from datetime import datetime, timedelta, timezone
 
 from astrbot.api import logger
 from astrbot.api.event import MessageChain
+from astrbot.api.message_components import At
 
 from .api import get, post
 
 WATCH_POLL_SECONDS = 20
 WATCH_CONFIG_FILE = "earthmc_watch.json"
 TOWN_CHECK_INTERVAL = 3  # 城镇监控每 3 个轮询周期(60s)检查一次
+
+
+def current_cn_minutes() -> int:
+    """当前中国时间(UTC+8)的当天分钟数 0..1439。
+    容器时钟为 UTC，与 scanner._seconds_until_next（scanner.py L272-279）约定一致。"""
+    cn = datetime.now(timezone.utc) + timedelta(hours=8)
+    return cn.hour * 60 + cn.minute
+
+
+def parse_cn_time(s) -> int | None:
+    """把 'HH:MM' 或裸小时（如 '23' / '7'）解析为当天分钟数；非法返回 None。"""
+    if not s:
+        return None
+    s = str(s).strip()
+    try:
+        if ":" in s:
+            h, m = (int(x) for x in s.split(":", 1))
+        else:
+            h, m = int(s), 0
+    except ValueError:
+        return None
+    if 0 <= h <= 23 and 0 <= m <= 59:
+        return h * 60 + m
+    return None
+
+
+def in_dnd(w: dict) -> bool:
+    """该群是否处于免打扰时段。未设置/非法/起止相同 → False（不启用）。
+    跨午夜判断：start<end 用区间，否则 now>=start or now<end。"""
+    start = w.get("vp_dnd_start") or ""
+    end = w.get("vp_dnd_end") or ""
+    if not start or not end:
+        return False
+    sm, em = parse_cn_time(start), parse_cn_time(end)
+    if sm is None or em is None or sm == em:
+        return False
+    now = current_cn_minutes()
+    if sm < em:
+        return sm <= now < em
+    return now >= sm or now < em  # 跨午夜
 
 
 class WatchManager:
@@ -116,12 +158,24 @@ class WatchManager:
                 needs_player = any(w.get("players") for w in config.values())
                 needs_towns = (tick % self.town_check_interval == 0 and
                                any(w.get("towns") for w in config.values()))
+                needs_player_towns = (tick % self.town_check_interval == 0 and
+                                      any(w.get("players") for w in config.values()))
 
-                logger.debug("[EarthMC] Watch tick #%d: vp=%s player=%s towns=%s",
-                             tick, needs_vp, needs_player, needs_towns)
+                logger.debug("[EarthMC] Watch tick #%d: vp=%s player=%s towns=%s p_towns=%s",
+                             tick, needs_vp, needs_player, needs_towns, needs_player_towns)
 
                 server_data = await get("/", force=True) if needs_vp else None
                 online_data = await get("/online", force=True) if needs_player else None
+
+                # 玩家城镇检测：复用城镇检查节奏，逐玩家单查（与 /em player 同一索引，避免批量滞后）
+                p_map: dict = {}
+                if needs_player_towns:
+                    pnames = sorted({n for w in config.values()
+                                     for n in (w.get("players") or {})})
+                    for name in pnames:
+                        one = await post("/players", {"query": [name]})
+                        if one and isinstance(one, list) and one:
+                            p_map[one[0].get("name", "").lower()] = one[0]
 
                 if needs_vp:
                     logger.debug("[EarthMC] server_data keys: %s",
@@ -139,6 +193,8 @@ class WatchManager:
                         await self._check_vp(group_id, umo, w, server_data)
                     if online_data and w.get("players"):
                         await self._check_players(group_id, umo, w, online_data)
+                    if needs_player_towns and w.get("players") and p_map:
+                        await self._check_player_towns(group_id, umo, w, p_map)
                     if needs_towns and w.get("towns"):
                         await self._check_towns(group_id, umo, w)
 
@@ -172,8 +228,16 @@ class WatchManager:
         for t in sorted(thresholds, reverse=True):
             if remaining <= t < vp_last:
                 msg = f"🗳 VoteParty 剩余 {remaining} 票"
+                at_list = w.get("vp_at") or []
+                at_lines = w.get("vp_at_lines") or []
+                # @ 只在标记了 atline 的线触发；未标记任何线则默认不 @
+                if at_list and (t in at_lines) and not in_dnd(w):
+                    chain = MessageChain([At(qq=int(qq)) for qq in at_list])
+                    chain.message(msg)
+                else:
+                    chain = MessageChain().message(msg)
                 try:
-                    await self._send(umo, MessageChain().message(msg))
+                    await self._send(umo, chain)
                 except Exception as e:
                     logger.error(f"[EarthMC] Watch VP 发送失败: {e}")
                 changed = True
@@ -194,22 +258,24 @@ class WatchManager:
         if not watched:
             return
 
-        online_names = {p.get("name", "").lower()
-                        for p in data.get("players", [])}
+        # 小写名 → 服务端规范名（显示用规范大小写）
+        online_map = {p.get("name", "").lower(): (p.get("formattedName") or p.get("name", ""))
+                      for p in data.get("players", [])}
         now = time.time()
         changed = False
 
         for name, state in list(watched.items()):
-            is_online = name.lower() in online_names
+            is_online = name.lower() in online_map
             was_online = state.get("online", False)
 
             if is_online == was_online:
                 continue
 
             changed = True
+            display = online_map.get(name.lower(), name)   # 离线时退回存储名
             if is_online:
                 state["online_since"] = now
-                msg = f"🟢 {name} 上线"
+                msg = f"🟢 {display} 上线"
             else:
                 since = state.get("online_since")
                 if since:
@@ -219,7 +285,7 @@ class WatchManager:
                     state.pop("online_since", None)
                 else:
                     dur = "?"
-                msg = f"🔴 {name} 下线（在线{dur}）"
+                msg = f"🔴 {display} 下线（在线{dur}）"
 
             try:
                 await self._send(umo, MessageChain().message(msg))
@@ -230,6 +296,70 @@ class WatchManager:
 
         if changed:
             # 从磁盘重新加载，合并变更，避免覆盖并发命令修改
+            config = self.load_config()
+            gw = config.get(group_id)
+            if gw:
+                gw["players"] = watched
+                self.save_config(config)
+
+    # ── 玩家城镇变动检查 ──────────────────
+
+    async def _check_player_towns(self, group_id: str, umo: str,
+                                  w: dict, p_map: dict):
+        """检测被监控玩家的城镇变动（加入/离开/换镇）。"""
+        watched: dict = w.get("players", {})
+        if not watched:
+            return
+        changed = False
+        renames: dict = {}       # 旧 key → 服务端规范名（纠正存量的用户输入大小写）
+        for name, state in list(watched.items()):
+            p = p_map.get(name.lower())
+            if not p:
+                logger.debug("[EarthMC] 玩家 %s 城镇数据缺失，跳过", name)
+                continue
+            # 用服务端规范名显示（/players 对离线玩家也返回）
+            display = p.get("formattedName") or p.get("name") or name
+            if display != name and display.lower() == name.lower():
+                renames[name] = display
+            st = p.get("status") or {}
+            has_town = bool(st.get("hasTown"))
+            cur = (p.get("town") or {}).get("name", "") if has_town else ""
+            old = state.get("town")
+            logger.debug("[EarthMC] 玩家城镇 %s: old=%r cur=%r hasTown=%s town=%s",
+                         name, old, cur, st.get("hasTown"), p.get("town"))
+            if old is None:          # 首次观测：只建基线，不报变动（兼容旧配置）
+                state["town"] = cur
+                changed = True
+                continue
+            if has_town and not cur:
+                # 有城镇但名称未同步（新建城镇关联延迟）：暂不改 state，下轮再查
+                logger.info("[EarthMC] 玩家 %s 有城镇但名称未同步，跳过本轮 town=%s",
+                            name, p.get("town"))
+                continue
+            if cur == old:
+                continue
+            if old and cur:
+                msg = f"🏘 {display} 离开了 {old}，加入了 {cur}"
+            elif cur:
+                msg = f"🏘 {display} 加入了城镇 {cur}"
+            elif old:
+                msg = f"🚪 {display} 离开了城镇 {old}（成为游民）"
+            else:
+                continue
+            state["town"] = cur
+            try:
+                await self._send(umo, MessageChain().message(msg))
+            except Exception as e:
+                logger.error(f"[EarthMC] Watch 玩家城镇发送失败: {e}")
+            changed = True
+
+        if renames:
+            for old_key, new_key in renames.items():
+                if old_key in watched and new_key not in watched:
+                    watched[new_key] = watched.pop(old_key)
+            changed = True
+
+        if changed:
             config = self.load_config()
             gw = config.get(group_id)
             if gw:
@@ -251,11 +381,15 @@ class WatchManager:
 
         t_map = {t.get("name", "").lower(): t for t in data}
         changed = False
+        renames: dict = {}          # 旧 key → 服务端规范名（纠正存量大小写）
 
         for name, old in list(watched.items()):
             td = t_map.get(name.lower(), {})
             if not td:
                 continue
+            display = td.get("name") or name    # 显示用服务端规范名
+            if display != name and display.lower() == name.lower():
+                renames[name] = display
             stats = td.get("stats") or {}
             mayor = (td.get("mayor") or {}).get("name", "?")
             nation = (td.get("nation") or {}).get("name", "无")
@@ -285,7 +419,7 @@ class WatchManager:
             if residents != old_r:
                 diff = residents - old_r
                 sign = "+" if diff >= 0 else ""
-                parts = [f"👥 {name} 人数 {old_r}→{residents} ({sign}{diff})"]
+                parts = [f"👥 {display} 人数 {old_r}→{residents} ({sign}{diff})"]
                 added = cur_names - old_names
                 removed = old_names - cur_names
                 if added:
@@ -301,7 +435,7 @@ class WatchManager:
             if blocks != old_b:
                 diff = blocks - old_b
                 sign = "+" if diff >= 0 else ""
-                msgs.append(f"🧱 {name} 方块 {old_b}→{blocks}/{max_blocks} ({sign}{diff})")
+                msgs.append(f"🧱 {display} 方块 {old_b}→{blocks}/{max_blocks} ({sign}{diff})")
                 old["blocks"] = blocks
                 old["maxBlocks"] = max_blocks
 
@@ -310,29 +444,29 @@ class WatchManager:
             if balance != old_bal:
                 diff = balance - old_bal
                 sign = "+" if diff >= 0 else ""
-                msgs.append(f"💰 {name} 余额 {old_bal}→{balance}G ({sign}{diff}G)")
+                msgs.append(f"💰 {display} 余额 {old_bal}→{balance}G ({sign}{diff}G)")
                 old["balance"] = balance
 
             # 市长
             old_mayor = old.get("mayor", "")
             if mayor != old_mayor:
-                msgs.append(f"👤 {name} 市长 {old_mayor}→{mayor}")
+                msgs.append(f"👤 {display} 市长 {old_mayor}→{mayor}")
                 old["mayor"] = mayor
 
             # 国家
             old_nation = old.get("nation", "")
             if nation != old_nation:
-                msgs.append(f"🏰 {name} 国家 {old_nation}→{nation}")
+                msgs.append(f"🏰 {display} 国家 {old_nation}→{nation}")
                 old["nation"] = nation
 
             # 开放/废墟状态
             is_open_old = old.get("is_open", None)
             if is_open_old is not None and is_open != is_open_old:
-                msgs.append(f"🚪 {name} {'开放' if is_open else '关闭'}")
+                msgs.append(f"🚪 {display} {'开放' if is_open else '关闭'}")
 
             is_ruined_old = old.get("is_ruined", None)
             if is_ruined_old is not None and is_ruined != is_ruined_old:
-                msgs.append(f"💀 {name} 已变为废墟！")
+                msgs.append(f"💀 {display} 已变为废墟！")
 
             old["is_open"] = is_open
             old["is_ruined"] = is_ruined
@@ -344,6 +478,12 @@ class WatchManager:
                         umo, MessageChain().message("\n".join(msgs)))
                 except Exception as e:
                     logger.error(f"[EarthMC] Watch 城镇发送失败: {e}")
+
+        if renames:
+            for old_key, new_key in renames.items():
+                if old_key in watched and new_key not in watched:
+                    watched[new_key] = watched.pop(old_key)
+            changed = True
 
         if changed:
             config = self.load_config()

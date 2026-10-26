@@ -1,0 +1,35 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+本插件的**实现细节统一维护在工作区的 [`../docs/earthmc-plugin.md`](../docs/earthmc-plugin.md)**，本文件只做指针 + 高频操作，避免两份副本漂移。
+
+- 部署拓扑、SSH、端口、SnowLuma、多开 QQ → [`../CLAUDE.md`](../CLAUDE.md)
+- AstrBot 插件开发 API 速查（FunctionTool / filter / Plugin Pages）→ [`../docs/astrbot-dev-reference.md`](../docs/astrbot-dev-reference.md)
+- 本插件命令体系、模块划分、缓存、配置项、mcMMO、watch/VP、WebUI Pages → [`../docs/earthmc-plugin.md`](../docs/earthmc-plugin.md)
+
+## 常用命令
+
+没有构建、测试或 lint 步骤（纯插件源码，无 pyproject / 测试套件）。开发循环就是「改本地 → 上传 → 重启容器」：
+
+```bash
+# 本地 → 服务器（本机 D:\MyProject\astrbot\astrbot_plugin_earthmc\ 为 Git 仓库，分支 master）
+# 上传到 ~/astrbot/data/plugins/astrbot_plugin_earthmc/
+
+ssh astrbot
+sudo rm -rf ~/astrbot/data/plugins/astrbot_plugin_earthmc/__pycache__   # 必做，否则加载旧字节码
+docker restart astrbot
+docker logs -f astrbot | grep -i earthmc
+```
+
+`pages/` 静态资源改动只需刷新浏览器；改 `.py` 一律要重启容器。日常用 `docker restart`，**不要 `docker compose up -d` 重建**——插件依赖装在容器层，重建后会丢。
+
+提交在本仓库（`origin` = `J1movo/astrbot_plugin_earthmc`）里做；`metadata.yaml` 的 `version` 与 `CHANGELOG.md` 同步维护。
+
+## 架构要点
+
+- **双入口**：`main.py` 的 `/em` 命令族（含顶层别名 `/vp` `/t` `/n` `/res`）与 `tools.py` 的 LLM FunctionTool，两者共享 `api.py` 的请求/缓存层。
+- **`watch.py`** 是后台监控（VP 阈值 / 玩家上下线加城镇变动 / 城镇变动），状态落在 `plugin_data` 下的 `earthmc_watch.json`，按群隔离。
+- **`mcmmo.py`** 独立于主流程，需 `api_key`（放**请求体**而非 header，技能名大写白名单），结果缓存 180s。
+- **命名**：查询不区分大小写、直接透传；**比较两侧都 `.lower()`，存储与显示用服务端规范名**。这条最容易写错，细节见 `../docs/earthmc-plugin.md`「名称大小写约定」。
+- **时区**：`scan_hour` / `scan_minute` / `/em vp dnd` 一律 UTC+8；容器时钟是 UTC，用 `datetime.now(timezone.utc) + timedelta(hours=8)`，别用裸 `datetime.now()`。

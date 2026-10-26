@@ -1,4 +1,10 @@
 {
+  "api_key": {
+    "description": "EarthMC API 密钥（游戏内 /api key create 获取）",
+    "type": "string",
+    "default": "",
+    "hint": "部分端点（mcMMO 排行榜等）需要，留空则不携带 X-API-Key"
+  },
   "cache_ttl": {
     "description": "API 缓存时间（毫秒）",
     "type": "int",

@@ -18,19 +18,40 @@ HTTP_TIMEOUT = 10.0
 
 
 def configure(cache_ttl: int | None = None,
-              http_timeout: int | None = None):
+              http_timeout: int | None = None,
+              api_key: str = ""):
     """运行时覆盖配置。参数单位为毫秒，内部转为秒。"""
-    global CACHE_TTL, HTTP_TIMEOUT
+    global CACHE_TTL, HTTP_TIMEOUT, _API_KEY
     if cache_ttl is not None:
         CACHE_TTL = cache_ttl / 1000.0
     if http_timeout is not None:
         HTTP_TIMEOUT = http_timeout / 1000.0
+    if api_key:
+        _API_KEY = api_key.strip()   # 去掉粘贴时带的首尾空白
 
 # ════════════════════════════════════════
 # HTTP
 # ════════════════════════════════════════
 _session: aiohttp.ClientSession | None = None
 _cache: dict[str, tuple[dict, float]] = {}
+_API_KEY = ""
+
+
+def _headers() -> dict | None:
+    """已配置 API key 时返回请求头，否则 None。"""
+    return {"X-API-Key": _API_KEY} if _API_KEY else None
+
+
+def _key_hint() -> str:
+    """调试用：显示 key 是否已配置及掩码，便于确认是否真的发出了 key。"""
+    if not _API_KEY:
+        return "未配置 API key"
+    return f"已发送 key {_API_KEY[:4]}…{_API_KEY[-4:]} (len={len(_API_KEY)})"
+
+
+def get_api_key() -> str:
+    """返回当前配置的 API key（用于放入请求体，如 /mcmmo-top 的 key 字段）。"""
+    return _API_KEY
 
 
 async def _get_session() -> aiohttp.ClientSession:
@@ -57,7 +78,12 @@ async def get(path: str, *, force: bool = False) -> dict | list | None:
                 return data
     try:
         session = await _get_session()
-        async with session.get(f"{BASE_URL}{path}") as resp:
+        async with session.get(f"{BASE_URL}{path}", headers=_headers()) as resp:
+            if resp.status >= 400:
+                text = await resp.text()
+                logger.warning(f"[EarthMC] GET {path} → HTTP {resp.status}: {text[:100]} "
+                               f"({_key_hint()})")
+                return None
             data = await resp.json(content_type=None)
             _cache[path] = (data, _time.time())
             return data
@@ -69,7 +95,13 @@ async def get(path: str, *, force: bool = False) -> dict | list | None:
 async def post(path: str, body: dict) -> dict | list | None:
     try:
         session = await _get_session()
-        async with session.post(f"{BASE_URL}{path}", json=body) as resp:
+        async with session.post(f"{BASE_URL}{path}", json=body,
+                                headers=_headers()) as resp:
+            if resp.status >= 400:
+                text = await resp.text()
+                logger.warning(f"[EarthMC] POST {path} → HTTP {resp.status}: {text[:100]} "
+                               f"({_key_hint()})")
+                return None
             return await resp.json(content_type=None)
     except Exception as e:
         logger.error(f"[EarthMC] POST {path} → {e}")

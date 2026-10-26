@@ -4,6 +4,7 @@ AstrBot 插件：EarthMC 服务器信息查询 v1.13.1
 """
 import asyncio
 import os
+import time
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star
@@ -22,7 +23,8 @@ from .tools import (
     MapPlayerTool,
     MapLocationTool,
 )
-from .watch import WatchManager
+from .mcmmo import McMMOTopTool
+from .watch import WatchManager, current_cn_minutes, in_dnd, parse_cn_time
 from .scanner import TownRiskScanner
 from .market import (
     MarketManager, MarketAddTool, MarketSearchTool,
@@ -35,7 +37,7 @@ from .waypoints import (
 
 HELP_TEXT = """🌍 EarthMC 查询
 ── 查询 ──
-  status vp town nation player online nearby location quarter mm
+  status vp town nation player online nearby location quarter mm mmo
 ── 地图 ──
   /em map town <名>    城镇地图截图
   /em map player <名>  玩家位置截图
@@ -45,10 +47,12 @@ HELP_TEXT = """🌍 EarthMC 查询
 ── 分析 ──
   /em risk      使用 /em risk help 查看子命令
 ── 监控 ──
+  /em vp        使用 /em vp help 查看子命令
   /em watch     使用 /em watch help 查看子命令
 ── 市场 ──
   /em market    使用 /em market 查看子命令
 ━━━━━━━━━━━━━━━━
+别名: /t 城镇 · /n 国家 · /res 玩家 · /vp VP 提醒 · /mctop mcMMO 榜
 也可直接 @bot 用自然语言询问"""
 
 RISK_HELP = """销城分析:
@@ -77,15 +81,42 @@ WAYPOINT_HELP = """路径点:
   /em wp list [世界]                     查看全部"""
 
 WATCH_HELP = """自动监控:
-  /em watch vp <票数> ...     多级 VP 提醒
-  /em watch player add <名>   添加玩家监控
-  /em watch player del <名>   移除玩家监控
-  /em watch player             查看监控玩家列表
-  /em watch town add <名>     添加城镇监控
-  /em watch town del <名>     移除城镇监控
-  /em watch town               查看监控城镇列表
-  /em watch off               关闭所有
-  /em watch                   查看全部设置"""
+  /em watch player add <名>          添加玩家监控
+  /em watch player del <名>          移除玩家监控
+  /em watch player                   查看监控玩家列表
+  /em watch town add <名>            添加城镇监控
+  /em watch town del <名>            移除城镇监控
+  /em watch town                     查看监控城镇列表
+  /em watch off                      关闭所有（/em confirm 确认，/em cancel 取消）
+  /em watch                          查看全部设置"""
+
+VP_USAGE = ("❌ 用法: /em vp <票数> ... | at <add|del|reset|off> <QQ号> ... | "
+            "atline <add|del|reset|off> <票数>... | dnd <开始> <结束> | status\n"
+            "例如:\n"
+            "  /em vp 500 200 100\n"
+            "  /em vp at add 123456\n"
+            "  /em vp at del 123456\n"
+            "  /em vp at reset 123456 654321\n"
+            "  /em vp at off\n"
+            "  /em vp atline add 200\n"
+            "  /em vp atline del 200\n"
+            "  /em vp atline reset 200 100\n"
+            "  /em vp dnd 23:00 07:30\n"
+            "  /em vp dnd off\n"
+            "  /em vp status")
+
+# at / atline 的操作关键字别名
+_OP_ALIASES = {
+    "add": "add", "添加": "add",
+    "del": "del", "delete": "del", "remove": "del", "删除": "del", "移除": "del",
+    "reset": "reset", "重设": "reset",
+}
+
+
+def _first_token(text: str) -> str:
+    """取首个空白分隔的 token（多余文本静默截断）；无内容返回空串。"""
+    parts = text.split(maxsplit=1)
+    return parts[0] if parts else ""
 
 ALL_TOOLS = [
     ServerStatusTool(), VotePartyTool(), TownTool(), NationTool(),
@@ -97,6 +128,7 @@ ALL_TOOLS = [
     MapTownTool(),
     MapPlayerTool(),
     MapLocationTool(),
+    McMMOTopTool(),
     MarketAddTool(),
     MarketSearchTool(),
     TrialAddTool(),
@@ -116,6 +148,7 @@ TOOL_MAP = {
     "location": LocationTool,
     "quarter":  QuarterTool,
     "mm":       MysteryMasterTool,
+    "mmo":      McMMOTopTool,
 }
 
 
@@ -127,10 +160,12 @@ class EarthMCPlugin(Star):
         api_configure(
             cache_ttl=config.get("cache_ttl", 30000),
             http_timeout=config.get("http_timeout", 10000),
+            api_key=config.get("api_key", ""),
         )
 
         watch_interval_ms = config.get("watch_interval", 20000)
-        self.watch_interval = watch_interval_ms // 1000  # 秒，用于帮助消息
+
+        self._pending_confirm: dict = {}   # group_key → {user, ts, kind}，/em confirm 二次确认用
 
         self.watch = WatchManager(
             self.name or "astrbot_plugin_earthmc",
@@ -168,16 +203,28 @@ class EarthMCPlugin(Star):
             "/astrbot_plugin_earthmc/configs/del",
             self._api_configs_del, ["POST"], "删除配置")
 
-        # ── WebUI Watch 管理 API ──
+        # ── WebUI VP 提醒 API（独立于 watch） ──
+        context.register_web_api(
+            "/astrbot_plugin_earthmc/vp/status",
+            self._api_vp_status, ["GET"], "获取某群 VP 配置")
+        context.register_web_api(
+            "/astrbot_plugin_earthmc/vp/save",
+            self._api_vp_save, ["POST"], "保存 VP 设置")
+        context.register_web_api(
+            "/astrbot_plugin_earthmc/vp/off",
+            self._api_vp_off, ["POST"], "清除 VP 提醒线")
+
+        # ── WebUI Watch 管理 API（玩家/城镇） ──
         context.register_web_api(
             "/astrbot_plugin_earthmc/watch/groups",
             self._api_watch_groups, ["GET"], "列出有 watch 的群")
         context.register_web_api(
             "/astrbot_plugin_earthmc/watch/status",
             self._api_watch_status, ["GET"], "获取某群 watch 配置")
+        # 兼容：旧 VP 保存路径（浏览器缓存旧 app.js 时仍可用）
         context.register_web_api(
             "/astrbot_plugin_earthmc/watch/vp/save",
-            self._api_watch_vp_save, ["POST"], "保存 VP 阈值")
+            self._api_vp_save, ["POST"], "保存 VP 设置（兼容旧路径）")
         context.register_web_api(
             "/astrbot_plugin_earthmc/watch/player/add",
             self._api_watch_player_add, ["POST"], "添加玩家监控")
@@ -205,19 +252,31 @@ class EarthMCPlugin(Star):
 
     # ── 命令调度 ──────────────────────
 
+    def _cmd_prelude(self, event: AstrMessageEvent, names: tuple):
+        """命令公共前置：记录会话、检查功能开关、剥离命令前缀（兼容带不带 /）。
+        返回 (uid, 剩余文本)；返回 None 表示该会话已关闭 /em 命令，应直接跳过。"""
+        uid = str(event.message_obj.group_id or event.message_obj.session_id)
+        self._record_conversation(uid, "group" if event.message_obj.group_id else "friend")
+        if not self._feature_enabled(self.load_feature_config(uid), "commands"):
+            return None
+        t = event.message_str.strip()
+        if t.startswith("/"):
+            t = t[1:]
+        low = t.lower()
+        for n in names:
+            if low == n:
+                return uid, ""
+            if low.startswith(n + " "):
+                return uid, t[len(n) + 1:].strip()
+        return uid, t
+
     @filter.command("em", priority=10)
     async def cmd_em(self, event: AstrMessageEvent):
         """EarthMC 查询：/em status|vp|town|nation|player|online|nearby|location|quarter|mm|watch"""
-        uid = str(event.message_obj.group_id or event.message_obj.session_id)
-        self._record_conversation(uid, "group" if event.message_obj.group_id else "friend")
-        cfg = self.load_feature_config(uid)
-        if not self._feature_enabled(cfg, "commands"):
+        pre = self._cmd_prelude(event, ("em",))
+        if not pre:
             return
-        text = event.message_str.strip()
-        for prefix in ("/em ", "em "):
-            if text.lower().startswith(prefix):
-                text = text[len(prefix):].strip()
-                break
+        uid, text = pre
 
         if not text:
             yield event.plain_result(HELP_TEXT)
@@ -230,8 +289,37 @@ class EarthMCPlugin(Star):
         arg2 = parts[2] if len(parts) > 2 else ""
         arg3 = parts[3] if len(parts) > 3 else ""
 
+        # 执行 confirm/cancel 以外的命令时，自动取消本群待确认的操作
+        if sub not in ("confirm", "cancel"):
+            self._pending_confirm.pop(uid, None)
+
         if sub == "help":
             yield event.plain_result(HELP_TEXT)
+            event.stop_event()
+            return
+
+        if sub in ("confirm", "cancel"):
+            result = (self._handle_confirm(event) if sub == "confirm"
+                      else self._handle_cancel(event))
+            yield event.plain_result(result)
+            event.stop_event()
+            return
+
+        if sub == "vp":
+            # 裸 /em vp → 查询投票派对进度（任意会话可用）
+            if not arg:
+                yield event.plain_result(await VotePartyTool().call(None))
+                event.stop_event()
+                return
+            # 带参 → VP 提醒配置（仅群聊；只认 group_id，私聊 session_id 是 QQ 不能兜底）
+            group_id = event.message_obj.group_id
+            if not group_id:
+                yield event.plain_result("❌ VP 提醒配置仅在群聊中可用。")
+                event.stop_event()
+                return
+            vp_val = " ".join(x for x in (arg, arg2, arg3) if x)
+            yield event.plain_result(
+                await self._cmd_vp(event, vp_val, str(group_id)))
             event.stop_event()
             return
 
@@ -292,7 +380,108 @@ class EarthMCPlugin(Star):
         finally:
             event.stop_event()
 
+    # ── 顶层别名命令（/vp、/res、/t、/n） ──
+
+    @filter.command("vp", priority=10)
+    async def cmd_vp_alias(self, event: AstrMessageEvent):
+        """VP 提醒（`/em vp` 的别名）：裸命令查询进度，带参配置。"""
+        pre = self._cmd_prelude(event, ("vp",))
+        if not pre:
+            return
+        uid, text = pre
+        self._pending_confirm.pop(uid, None)
+        if not text:                       # 裸 /vp → 查询进度
+            yield event.plain_result(await VotePartyTool().call(None))
+            event.stop_event()
+            return
+        group_id = event.message_obj.group_id
+        if not group_id:
+            yield event.plain_result("❌ VP 提醒配置仅在群聊中可用。")
+            event.stop_event()
+            return
+        yield event.plain_result(await self._cmd_vp(event, text, str(group_id)))
+        event.stop_event()
+
+    @filter.command("res", priority=10)
+    async def cmd_res_alias(self, event: AstrMessageEvent):
+        """玩家查询（`/em player` 的别名）。"""
+        pre = self._cmd_prelude(event, ("res",))
+        if not pre:
+            return
+        uid, text = pre
+        self._pending_confirm.pop(uid, None)
+        yield event.plain_result(await _run_tool(PlayerTool, _first_token(text)))
+        event.stop_event()
+
+    @filter.command("t", priority=10)
+    async def cmd_t_alias(self, event: AstrMessageEvent):
+        """城镇查询（`/em town` 的别名）。"""
+        pre = self._cmd_prelude(event, ("t",))
+        if not pre:
+            return
+        uid, text = pre
+        self._pending_confirm.pop(uid, None)
+        yield event.plain_result(await _run_tool(TownTool, _first_token(text)))
+        event.stop_event()
+
+    @filter.command("n", priority=10)
+    async def cmd_n_alias(self, event: AstrMessageEvent):
+        """国家查询（`/em nation` 的别名）。"""
+        pre = self._cmd_prelude(event, ("n",))
+        if not pre:
+            return
+        uid, text = pre
+        self._pending_confirm.pop(uid, None)
+        yield event.plain_result(await _run_tool(NationTool, _first_token(text)))
+        event.stop_event()
+
+    @filter.command("mctop", priority=10)
+    async def cmd_mctop_alias(self, event: AstrMessageEvent):
+        """mcMMO 排行榜（`/em mmo` 的别名）：/mctop <技能>。"""
+        pre = self._cmd_prelude(event, ("mctop",))
+        if not pre:
+            return
+        uid, text = pre
+        self._pending_confirm.pop(uid, None)
+        yield event.plain_result(await _run_tool(McMMOTopTool, _first_token(text)))
+        event.stop_event()
+
     # ── watch 子命令 ───────────────────
+
+    def _handle_confirm(self, event: AstrMessageEvent) -> str:
+        """/em confirm：确认执行本群待确认的破坏性操作（30 秒内，限发起人）。"""
+        group_id = event.message_obj.group_id
+        if not group_id:
+            return "❌ /em confirm 仅在群聊中可用。"
+        group_key = str(group_id)
+        pc = self._pending_confirm.get(group_key)
+        if not pc:
+            return "❌ 当前没有待确认的操作。"
+        if time.time() - pc["ts"] > 30:
+            self._pending_confirm.pop(group_key, None)
+            return "❌ 确认已超时（30 秒），请重新发起。"
+        if pc["user"] != str(event.get_sender_id()):
+            return "❌ 该操作由他人发起，仅发起人可确认。"
+        kind = pc.get("kind", "")
+        self._pending_confirm.pop(group_key, None)
+        if kind == "watch_off":
+            config = self.watch.load_config()
+            if group_key in config:
+                del config[group_key]
+                self.watch.save_config(config)
+            return "✅ 已确认，本群所有自动提醒已关闭。"
+        return "✅ 已确认。"
+
+    def _handle_cancel(self, event: AstrMessageEvent) -> str:
+        """/em cancel：取消本群待确认的破坏性操作。取消是保护性操作，任何群成员可取消。"""
+        group_id = event.message_obj.group_id
+        if not group_id:
+            return "❌ /em cancel 仅在群聊中可用。"
+        group_key = str(group_id)
+        if group_key in self._pending_confirm:
+            self._pending_confirm.pop(group_key)
+            return "✅ 已取消该操作。"
+        return "❌ 当前没有待取消的操作。"
 
     async def _handle_watch(self, event: AstrMessageEvent,
                             action: str, value: str) -> str:
@@ -307,18 +496,18 @@ class EarthMCPlugin(Star):
         if action in ("help",):
             return WATCH_HELP
 
-        # 关闭
+        # 关闭（两步确认：先登记，回复 /em confirm 执行）
         if action in ("off", "stop", "关闭"):
             config = self.watch.load_config()
-            if group_key in config:
-                del config[group_key]
-                self.watch.save_config(config)
-                return "✅ 已关闭本群所有自动提醒。"
-            return "⚠ 本群未开启自动提醒。"
-
-        # VP
-        if action in ("vp",):
-            return await self._cmd_watch_vp(event, value, group_key)
+            if group_key not in config:
+                return "⚠ 本群未开启自动提醒。"
+            self._pending_confirm[group_key] = {
+                "user": str(event.get_sender_id()),
+                "ts": time.time(),
+                "kind": "watch_off",
+            }
+            return ("⚠ 将关闭本群**所有**自动提醒（VP/玩家/城镇监控），不可撤销。\n"
+                    "回复 /em confirm 确认 /em cancel 取消（30 秒内有效）。")
 
         # 玩家
         if action in ("player", "players"):
@@ -331,38 +520,238 @@ class EarthMCPlugin(Star):
         # 查看全部
         return self._cmd_watch_status(group_key)
 
-    async def _cmd_watch_vp(self, event: AstrMessageEvent,
-                             value: str, group_key: str) -> str:
-        if not value:
-            return ("❌ 用法: /em watch vp <票数1> <票数2> ...\n"
-                    "例如: /em watch vp 500 200 100 50")
+    async def _cmd_vp(self, event: AstrMessageEvent,
+                       value: str, group_key: str) -> str:
+        if not value or value.strip().lower() in ("help", "帮助", "?"):
+            return ("📊 VP 提醒用法\n━━━━━━━━━━━━━━━━\n"
+                    "/em vp <票数> ...              多级提醒\n"
+                    "/em vp at add|del|reset|off <QQ号>   @ 名单\n"
+                    "/em vp atline add|del|reset|off <票数>  标记哪些线触发 @\n"
+                    "/em vp dnd <开始> <结束>        免打扰(UTC+8)\n"
+                    "/em vp off                     清除 VP 阈值\n"
+                    "/em vp status                  查看本群配置\n"
+                    "（留空 at/atline 显示当前配置）")
 
-        parts = value.replace(",", " ").split()
-        thresholds = []
-        for p in parts:
-            try:
-                t = int(p)
-                if t > 0:
-                    thresholds.append(t)
-            except ValueError:
-                return f"❌ 无效的票数: {p}"
-        if not thresholds:
-            return "❌ 请至少提供一个大于 0 的票数。"
-        thresholds.sort(reverse=True)
+        tokens = value.replace(",", " ").split()
+        mode = None                 # None=阈值上下文 | "at" | "atline" | "dnd"
+        thresholds: list[int] = []
+        at_list: list[int] = []
+        atline_list: list[int] = []
+        dnd_tokens: list[str] = []
+        do_status = False
+        at_op = atline_op = None    # None=留空(不操作) | "add" | "del" | "reset"
+        clear_th = clear_at = clear_atlines = clear_dnd = False
 
+        for tok in tokens:
+            low = tok.lower()
+            if low in ("at", "@"):
+                mode = "at"
+            elif low == "atline":
+                mode = "atline"
+            elif low == "dnd":
+                mode = "dnd"
+            elif low in ("off", "clear", "none"):
+                if mode == "at":
+                    clear_at = True
+                elif mode == "atline":
+                    clear_atlines = True
+                elif mode == "dnd":
+                    clear_dnd = True
+                else:
+                    clear_th = True
+            elif low == "status":
+                do_status = True
+            elif mode == "at":
+                op = _OP_ALIASES.get(low)
+                if op:
+                    if at_op:
+                        return f"❌ 冲突：at 只能指定一个操作（add/del/reset）\n\n{VP_USAGE}"
+                    at_op = op
+                elif tok.isdigit():
+                    if at_op is None:
+                        return ("❌ /em vp at 需要关键字：add|del|reset|off <QQ号>\n"
+                                "   例如 /em vp at add 123456\n\n" + VP_USAGE)
+                    at_list.append(int(tok))
+                else:
+                    break          # 格式不符 → 静默截断，忽略其后全部
+            elif mode == "atline":
+                op = _OP_ALIASES.get(low)
+                if op:
+                    if atline_op:
+                        return f"❌ 冲突：atline 只能指定一个操作（add/del/reset）\n\n{VP_USAGE}"
+                    atline_op = op
+                elif tok.isdigit():
+                    if atline_op is None:
+                        return ("❌ /em vp atline 需要关键字：add|del|reset|off <票数>\n"
+                                "   例如 /em vp atline add 200\n\n" + VP_USAGE)
+                    atline_list.append(int(tok))
+                else:
+                    break          # 格式不符 → 静默截断，忽略其后全部
+            elif mode == "dnd":
+                if len(dnd_tokens) >= 2:
+                    break          # 已够起止两个时间 → 静默截断
+                dnd_tokens.append(tok)
+            else:
+                try:
+                    t = int(tok)
+                except ValueError:
+                    break          # 非数字 → 静默截断，忽略其后全部
+                if t <= 0:
+                    return f"❌ 票数必须大于 0: {tok}\n\n{VP_USAGE}"
+                thresholds.append(t)
+
+        if do_status:
+            return self._vp_status_text(group_key)
+
+        # at / atline 留空（无操作、无 clear）→ 不修改配置，显示当前配置
+        if mode == "at" and at_op is None and not at_list and not clear_at:
+            return self._vp_status_text(group_key)
+        if mode == "atline" and atline_op is None and not atline_list and not clear_atlines:
+            return self._vp_status_text(group_key)
+
+        # 缺参边界
+        if mode == "at" and at_op and not at_list:
+            return f"❌ at {at_op} 后面至少需要一个 QQ 号\n\n{VP_USAGE}"
+        if mode == "atline" and atline_op and not atline_list:
+            return f"❌ atline {atline_op} 后面至少需要一个票数\n\n{VP_USAGE}"
+        if mode == "dnd" and not dnd_tokens and not clear_dnd:
+            return f"❌ /em vp dnd 需要起止两个时间\n\n{VP_USAGE}"
+        # 既操作又清除
+        if clear_at and (at_list or at_op):
+            return f"❌ 冲突：at 与 at off 不能同时使用\n\n{VP_USAGE}"
+        if clear_atlines and (atline_list or atline_op):
+            return f"❌ 冲突：atline 与 atline off 不能同时使用\n\n{VP_USAGE}"
+        if clear_dnd and dnd_tokens:
+            return f"❌ 冲突：dnd 与 dnd off 不能同时使用\n\n{VP_USAGE}"
+
+        # 免打扰时间解析校验
+        dnd_start = dnd_end = None
+        if dnd_tokens:
+            if len(dnd_tokens) == 1:
+                return f"❌ 免打扰需要起止两个时间\n\n{VP_USAGE}"
+            if (parse_cn_time(dnd_tokens[0]) is None
+                    or parse_cn_time(dnd_tokens[1]) is None):
+                return (f"❌ 免打扰时间格式无效: {dnd_tokens[0]} {dnd_tokens[1]}"
+                        f"（支持 HH:MM 或裸小时）\n\n{VP_USAGE}")
+            dnd_start, dnd_end = dnd_tokens[0], dnd_tokens[1]
+
+        # 落盘
         config = self.watch.load_config()
         if group_key not in config:
             config[group_key] = {"umo": event.unified_msg_origin}
-        config[group_key]["vp_thresholds"] = thresholds
-        config[group_key].setdefault("vp_last")
+        w = config[group_key]
+
+        # atline 校验：标记的票数必须在提醒线中，否则拒绝存储（del 不校验，否则删非提醒线值会被误拦）
+        if atline_list and atline_op != "del":
+            valid = set(thresholds) | set(w.get("vp_thresholds") or [])
+            bad = sorted({t for t in atline_list if t not in valid})
+            if bad:
+                cur = (" > ".join(str(t) for t in sorted(valid, reverse=True))
+                       if valid else "未设置")
+                return (f"❌ {'、'.join(str(t) for t in bad)} 不在提醒线中（当前 {cur}）\n"
+                        f"   请先用 /em vp 添加该线，或 /em vp atline off 清除\n\n"
+                        f"{VP_USAGE}")
+
+        msgs = []
+        if clear_th:
+            w.pop("vp_thresholds", None)
+            w.pop("vp_at_lines", None)   # 阈值没了，@ 标记随之失效
+            w["vp_last"] = None          # 重置基线，避免下次加回阈值时误报
+            thresholds = []
+            msgs.append("✅ 已清除 VP 阈值")
+        if clear_at:
+            w.pop("vp_at", None)
+            at_list = []
+            at_op = None
+            msgs.append("✅ 已清空 @ 名单")
+        if clear_atlines:
+            w.pop("vp_at_lines", None)
+            atline_list = []
+            atline_op = None
+            msgs.append("✅ 已清除 @ 触发线（默认不 @）")
+        if clear_dnd:
+            w.pop("vp_dnd_start", None)
+            w.pop("vp_dnd_end", None)
+            dnd_start = dnd_end = None
+            msgs.append("✅ 已关闭免打扰")
+
+        if thresholds:
+            uniq = []
+            for t in sorted(thresholds, reverse=True):
+                if t not in uniq:
+                    uniq.append(t)
+            w["vp_thresholds"] = uniq
+            w.setdefault("vp_last")
+            msgs.append("✅ VP 多级提醒已开启")
+            msgs.extend(f"  • 降至 {t} 票时提醒" for t in uniq)
+
+        # @ 名单：add / del / reset
+        if at_op:
+            cur = list(w.get("vp_at") or [])
+            if at_op == "add":
+                added = [q for q in at_list if q not in cur]
+                cur += added
+                w["vp_at"] = cur
+                msgs.append(f"✅ 已添加 @ 名单: {' '.join(map(str, added))}" if added
+                            else "⚠ 这些 QQ 已在 @ 名单中。")
+            elif at_op == "del":
+                removed = [q for q in at_list if q in cur]
+                cur = [q for q in cur if q not in at_list]
+                if cur:
+                    w["vp_at"] = cur
+                else:
+                    w.pop("vp_at", None)
+                msgs.append(f"✅ 已移除 @ 名单: {' '.join(map(str, removed))}" if removed
+                            else "⚠ 这些 QQ 不在 @ 名单中。")
+            else:  # reset
+                uniq = []
+                for q in at_list:
+                    if q not in uniq:
+                        uniq.append(q)
+                w["vp_at"] = uniq
+                msgs.append("✅ @ 名单: " + " ".join(str(q) for q in uniq))
+
+        # @ 触发线：add / del / reset
+        if atline_op:
+            cur = list(w.get("vp_at_lines") or [])
+            if atline_op == "add":
+                added = [t for t in atline_list if t not in cur]
+                cur += added
+                cur.sort(reverse=True)
+                w["vp_at_lines"] = cur
+                msgs.append(f"✅ 已添加 @ 触发线: {' > '.join(map(str, sorted(added, reverse=True)))}" if added
+                            else "⚠ 这些提醒线已在 @ 触发线中。")
+            elif atline_op == "del":
+                removed = [t for t in atline_list if t in cur]
+                cur = [t for t in cur if t not in atline_list]
+                if cur:
+                    w["vp_at_lines"] = cur
+                else:
+                    w.pop("vp_at_lines", None)
+                msgs.append(f"✅ 已移除 @ 触发线: {' > '.join(map(str, sorted(removed, reverse=True)))}" if removed
+                            else "⚠ 这些提醒线不在 @ 触发线中。")
+            else:  # reset
+                uniq = []
+                for t in sorted(atline_list, reverse=True):
+                    if t not in uniq:
+                        uniq.append(t)
+                w["vp_at_lines"] = uniq
+                msgs.append("✅ @ 触发线: " + " > ".join(str(t) for t in uniq))
+
+        if dnd_start is not None:
+            w["vp_dnd_start"] = dnd_start
+            w["vp_dnd_end"] = dnd_end
+            msgs.append(f"✅ 免打扰: {dnd_start} - {dnd_end} (UTC+8)")
+
         self.watch.save_config(config)
         self.watch.ensure_running()
 
-        lines = "\n".join(f"  • 降至 {t} 票时提醒" for t in thresholds)
-        return (f"✅ VP 多级提醒已开启\n━━━━━━━━━━━━━━━━\n{lines}\n"
-                f"━━━━━━━━━━━━━━━━\n"
-                f"🔄 检测间隔: {self.watch_interval} 秒\n"
-                f"使用 /em watch off 关闭")
+        if not msgs:
+            return self._vp_status_text(group_key)
+
+        return ("\n".join(msgs) +
+                f"\n━━━━━━━━━━━━━━━━\n"
+                f"查看: /em vp status")
 
     async def _cmd_watch_player(self, event: AstrMessageEvent,
                                  value: str, group_key: str) -> str:
@@ -381,31 +770,42 @@ class EarthMCPlugin(Star):
             if not names_str:
                 return ("❌ 用法: /em watch player add <玩家名> ...\n"
                         "例如: /em watch player add Fixer Warriorrr")
+            existing_lower = {k.lower() for k in watched}
             new = [n.strip() for n in names_str.replace(",", " ").split()
-                   if n.strip() and n.strip().lower() not in watched]
+                   if n.strip() and n.strip().lower() not in existing_lower]
             if not new:
                 return "⚠ 这些玩家已在监控列表中。"
 
-            # 校验玩家是否存在
+            # 校验玩家是否存在，并记录当前城镇作为基线
             from .api import post as api_post
             data = await api_post("/players", {"query": new})
             existing = set()
+            town_map = {}
+            canon = {}
             if data and isinstance(data, list):
                 existing = {p.get("name", "").lower() for p in data}
+                town_map = {p.get("name", "").lower(): (p.get("town") or {}).get("name", "")
+                            for p in data}
+                canon = {p.get("name", "").lower(): p.get("name", "")
+                         for p in data if p.get("name")}
 
             valid, invalid = [], []
             for name in new:
                 (valid if name.lower() in existing else invalid).append(name)
 
+            added = []
             for name in valid:
-                watched[name] = {"online": False}
+                cname = canon.get(name.lower(), name)   # 落服务端规范大小写
+                watched[cname] = {"online": False,
+                                  "town": town_map.get(name.lower(), "")}
+                added.append(cname)
             if valid:
                 self.watch.save_config(config)
                 self.watch.ensure_running()
 
             msg_parts = []
-            if valid:
-                msg_parts.append(f"✅ 已添加: {', '.join(valid)}")
+            if added:
+                msg_parts.append(f"✅ 已添加: {', '.join(added)}")
             if invalid:
                 msg_parts.append(f"❌ 玩家不存在: {', '.join(invalid)}")
             return "\n".join(msg_parts) if msg_parts else "⚠ 未能添加任何玩家。"
@@ -416,9 +816,10 @@ class EarthMCPlugin(Star):
                 return ("❌ 用法: /em watch player del <玩家名>\n"
                         "例如: /em watch player del Fixer")
             names = [n.strip() for n in names_str.replace(",", " ").split()]
-            removed = [n for n in names if n in watched]
-            for n in removed:
-                del watched[n]
+            names_lower = {n.lower() for n in names}
+            removed = [k for k in watched if k.lower() in names_lower]
+            for k in removed:
+                del watched[k]
             if not removed:
                 return "⚠ 这些玩家不在监控列表中。"
             if not watched:
@@ -440,7 +841,6 @@ class EarthMCPlugin(Star):
         return (f"📊 玩家上线监控 ({len(watched)} 人)\n"
                 f"━━━━━━━━━━━━━━━━\n" + "\n".join(lines) +
                 f"\n━━━━━━━━━━━━━━━━\n"
-                f"🔄 检测间隔: {self.watch_interval} 秒\n"
                 f"添加: /em watch player add <名>\n"
                 f"移除: /em watch player del <名>")
 
@@ -460,12 +860,13 @@ class EarthMCPlugin(Star):
             if not names_str:
                 return ("❌ 用法: /em watch town add <城镇名> ...\n"
                         "例如: /em watch town add Beijing Shanghai")
+            existing_lower = {k.lower() for k in watched}
             new = [n.strip() for n in names_str.replace(",", " ").split()
-                   if n.strip() and n.strip().lower() not in watched]
+                   if n.strip() and n.strip().lower() not in existing_lower]
             if not new:
                 return "⚠ 这些城镇已在监控列表中。"
 
-            from .tools import post as tpost
+            from .api import post as tpost
             tdata = await tpost("/towns", {"query": new})
             valid, invalid = [], []
             if tdata and isinstance(tdata, list):
@@ -518,9 +919,10 @@ class EarthMCPlugin(Star):
                 return ("❌ 用法: /em watch town del <城镇名>\n"
                         "例如: /em watch town del Beijing")
             names = [n.strip() for n in names_str.replace(",", " ").split()]
-            removed = [n for n in names if n in watched]
-            for n in removed:
-                del watched[n]
+            names_lower = {n.lower() for n in names}
+            removed = [k for k in watched if k.lower() in names_lower]
+            for k in removed:
+                del watched[k]
             if not removed:
                 return "⚠ 这些城镇不在监控列表中。"
             if not watched:
@@ -542,12 +944,55 @@ class EarthMCPlugin(Star):
             lines.append(f"  {name}  {r}人  {b}方块  {bal}G")
         return "\n".join(lines)
 
+    def _vp_status_text(self, group_key: str) -> str:
+        config = self.watch.load_config()
+        w = config.get(group_key)
+        if not w:
+            return ("📊 VP 提醒: 未开启\n━━━━━━━━━━━━━━━━\n"
+                    "开启: /em vp <票数> ...\n"
+                    "例如: /em vp 500 200 100")
+
+        lines = []
+        th = w.get("vp_thresholds")
+        if th:
+            lines.append("🎯 VP 提醒线: " +
+                         " > ".join(str(t) for t in sorted(th, reverse=True)))
+        else:
+            lines.append("🎯 VP 提醒: 未设置")
+
+        at = w.get("vp_at")
+        if at:
+            lines.append("📣 @ 名单: " + " ".join(str(q) for q in at))
+        else:
+            lines.append("📣 @ 名单: 未设置（仅纯文本）")
+
+        at_lines = w.get("vp_at_lines")
+        if at_lines:
+            lines.append("🎯 @ 触发线: " +
+                         " > ".join(str(t) for t in sorted(at_lines, reverse=True)))
+        else:
+            lines.append("🎯 @ 触发线: 未设置（默认不 @）")
+
+        ds, de = w.get("vp_dnd_start"), w.get("vp_dnd_end")
+        if ds and de:
+            lines.append(f"🌙 免打扰: {ds} - {de} (UTC+8)")
+        else:
+            lines.append("🌙 免打扰: 未设置")
+
+        now = current_cn_minutes()
+        cur = f"{now // 60:02d}:{now % 60:02d}"
+        lines.append(f"🕐 当前(UTC+8): {cur}  →  "
+                     + ("免打扰中（不 @）" if in_dnd(w) else "正常提醒"))
+
+        return ("📊 VP 提醒设置\n━━━━━━━━━━━━━━━━\n" + "\n".join(lines)
+                + "\n━━━━━━━━━━━━━━━━")
+
     def _cmd_watch_status(self, group_key: str) -> str:
         config = self.watch.load_config()
         w = config.get(group_key)
         if not w:
             return ("📊 本群自动提醒: 未开启\n━━━━━━━━━━━━━━━━\n"
-                    "开启 VP: /em watch vp <票数> ...\n"
+                    "开启 VP: /em vp <票数> ...\n"
                     "添加玩家: /em watch player add <名>\n"
                     "查看全部: /em watch")
 
@@ -558,6 +1003,25 @@ class EarthMCPlugin(Star):
                          " > ".join(str(t) for t in sorted(th, reverse=True)))
         else:
             parts.append("🎯 VP 提醒: 未设置")
+
+        at = w.get("vp_at")
+        if at:
+            parts.append("📣 @ 名单: " + " ".join(str(q) for q in at))
+        else:
+            parts.append("📣 @ 名单: 未设置")
+
+        at_lines = w.get("vp_at_lines")
+        if at_lines:
+            parts.append("🎯 @ 触发线: " +
+                         " > ".join(str(t) for t in sorted(at_lines, reverse=True)))
+        else:
+            parts.append("🎯 @ 触发线: 未设置（默认不 @）")
+
+        ds, de = w.get("vp_dnd_start"), w.get("vp_dnd_end")
+        if ds and de:
+            parts.append(f"🌙 免打扰: {ds} - {de} (UTC+8)")
+        else:
+            parts.append("🌙 免打扰: 未设置")
 
         pl = w.get("players")
         if pl:
@@ -574,7 +1038,6 @@ class EarthMCPlugin(Star):
         return (f"📊 本群自动提醒设置\n━━━━━━━━━━━━━━━━\n" +
                 "\n".join(parts) +
                 f"\n━━━━━━━━━━━━━━━━\n"
-                f"🔄 检测间隔: {self.watch_interval} 秒\n"
                 f"状态: 运行中 ✅\n"
                 f"关闭: /em watch off")
 
@@ -973,6 +1436,8 @@ class EarthMCPlugin(Star):
         features = payload.get("features", {})
         if not uid:
             return error_response("missing id", status_code=400)
+        if not uid.isdigit():
+            return error_response("ID 必须为数字（QQ群号或QQ号）", status_code=400)
         prefix = "friend" if ctype == "friend" else "group"
         path = os.path.join(self._configs_dir(), f"{prefix}_{uid}.json")
         data = {"id": uid, "type": ctype, "features": features}
@@ -1000,6 +1465,30 @@ class EarthMCPlugin(Star):
         from astrbot.api.web import json_response
         return json_response(list(self.watch.load_config().keys()))
 
+    @staticmethod
+    def _vp_payload(gid: str, w: dict | None) -> dict:
+        """VP 配置的对外返回体。"""
+        if not w:
+            return {"group_id": gid, "empty": True,
+                    "vp_thresholds": [], "vp_at": [], "vp_at_lines": [],
+                    "vp_dnd_start": "", "vp_dnd_end": ""}
+        return {
+            "group_id": gid,
+            "empty": False,
+            "vp_thresholds": w.get("vp_thresholds", []),
+            "vp_at": w.get("vp_at", []),
+            "vp_at_lines": w.get("vp_at_lines", []),
+            "vp_dnd_start": w.get("vp_dnd_start", ""),
+            "vp_dnd_end": w.get("vp_dnd_end", ""),
+        }
+
+    async def _api_vp_status(self):
+        from astrbot.api.web import json_response, error_response, request
+        gid = request.query.get("group_id", "").strip()
+        if not gid:
+            return error_response("missing group_id", status_code=400)
+        return json_response(self._vp_payload(gid, self.watch.load_config().get(gid)))
+
     async def _api_watch_status(self):
         from astrbot.api.web import json_response, error_response, request
         gid = request.query.get("group_id", "").strip()
@@ -1009,11 +1498,9 @@ class EarthMCPlugin(Star):
         w = config.get(gid)
         if not w:
             return json_response({"group_id": gid, "empty": True})
-        # 精简返回，去掉内部状态
-        return json_response({
-            "group_id": gid,
+        resp = self._vp_payload(gid, w)      # 兼容：保留 vp 字段供旧缓存前端使用
+        resp.update({
             "empty": False,
-            "vp_thresholds": w.get("vp_thresholds", []),
             "players": {k: v.get("online", False)
                         for k, v in (w.get("players") or {}).items()},
             "towns": {k: {
@@ -1022,6 +1509,7 @@ class EarthMCPlugin(Star):
                 "maxBlocks": v.get("maxBlocks", "?"),
             } for k, v in (w.get("towns") or {}).items()},
         })
+        return json_response(resp)
 
     @staticmethod
     def _build_umo(gid: str, ctype: str = "group") -> str:
@@ -1036,22 +1524,72 @@ class EarthMCPlugin(Star):
         if not w.get("umo"):
             w["umo"] = cls._build_umo(gid, ctype)
 
-    async def _api_watch_vp_save(self):
+    async def _api_vp_save(self):
         from astrbot.api.web import json_response, error_response, request
         payload = await request.json(default={})
         gid = str(payload.get("group_id", "")).strip()
         ctype = payload.get("type", "group")
         thresholds = payload.get("thresholds", [])
+        at = payload.get("at")                    # list | None（不传则不改动）
+        at_lines = payload.get("at_lines")        # list | None（不传则不改动）
+        dnd_start = (payload.get("dnd_start") or "").strip()
+        dnd_end = (payload.get("dnd_end") or "").strip()
         if not gid:
             return error_response("missing group_id", status_code=400)
+
         th = [int(t) for t in thresholds if str(t).isdigit() and int(t) > 0]
         th.sort(reverse=True)
+
+        if dnd_start and dnd_end:
+            if parse_cn_time(dnd_start) is None or parse_cn_time(dnd_end) is None:
+                return error_response("免打扰时间格式无效（需 HH:MM）", status_code=400)
+
         config = self.watch.load_config()
         self._ensure_watch_umo(config, gid, ctype)
-        config[gid]["vp_thresholds"] = th
+        w = config[gid]
+        w["vp_thresholds"] = th
+        if not th:
+            w["vp_last"] = None                    # 与命令行为一致，防误报
+
+        if at is not None:
+            uniq, seen = [], set()
+            for a in at:
+                if str(a).isdigit() and int(a) not in seen:
+                    seen.add(int(a))
+                    uniq.append(int(a))
+            if uniq:
+                w["vp_at"] = uniq
+            else:
+                w.pop("vp_at", None)
+
+        if at_lines is not None:
+            uniq, seen = [], set()
+            for a in at_lines:
+                v = int(a) if str(a).isdigit() else None
+                if v is not None and v in th and v not in seen:
+                    seen.add(v)
+                    uniq.append(v)
+            if uniq:
+                w["vp_at_lines"] = uniq
+            else:
+                w.pop("vp_at_lines", None)
+
+        if dnd_start and dnd_end:
+            w["vp_dnd_start"], w["vp_dnd_end"] = dnd_start, dnd_end
+        else:
+            w.pop("vp_dnd_start", None)
+            w.pop("vp_dnd_end", None)
+
         self.watch.save_config(config)
         self.watch.ensure_running()
-        return json_response({"saved": True, "thresholds": th})
+        return json_response({
+            "saved": True,
+            "thresholds": th,
+            "at": w.get("vp_at", []),
+            "at_lines": w.get("vp_at_lines", []),
+            "dnd_start": w.get("vp_dnd_start", ""),
+            "dnd_end": w.get("vp_dnd_end", ""),
+        })
 
     async def _api_watch_player_add(self):
         from astrbot.api.web import json_response, error_response, request
@@ -1069,8 +1607,10 @@ class EarthMCPlugin(Star):
         config = self.watch.load_config()
         self._ensure_watch_umo(config, gid, ctype)
         players = config[gid].setdefault("players", {})
-        if name.lower() not in players:
-            players[name] = {"online": False}
+        if name.lower() not in {k.lower() for k in players}:
+            cname = data[0].get("name") or name      # 落服务端规范大小写
+            players[cname] = {"online": False,
+                              "town": (data[0].get("town") or {}).get("name", "")}
             self.watch.save_config(config)
             self.watch.ensure_running()
             return json_response({"added": True, "name": name})
@@ -1145,17 +1685,41 @@ class EarthMCPlugin(Star):
         return json_response({"deleted": len(removed) > 0})
 
     async def _api_watch_off(self):
+        """关闭该群的玩家/城镇监控（不动 VP 提醒设置）。"""
         from astrbot.api.web import json_response, error_response, request
         payload = await request.json(default={})
         gid = str(payload.get("group_id", "")).strip()
         if not gid:
             return error_response("missing group_id", status_code=400)
         config = self.watch.load_config()
-        if gid in config:
-            del config[gid]
+        w = config.get(gid)
+        if not w:
+            return json_response({"closed": False})
+        changed = False
+        for key in ("players", "towns"):
+            if key in w:
+                del w[key]
+                changed = True
+        if changed:
             self.watch.save_config(config)
-            return json_response({"closed": True})
-        return json_response({"closed": False})
+        return json_response({"closed": changed})
+
+    async def _api_vp_off(self):
+        """清除 VP 提醒线（与 /em vp off 一致）：清阈值+@触发线，保留 @名单与免打扰。"""
+        from astrbot.api.web import json_response, error_response, request
+        payload = await request.json(default={})
+        gid = str(payload.get("group_id", "")).strip()
+        if not gid:
+            return error_response("missing group_id", status_code=400)
+        config = self.watch.load_config()
+        w = config.get(gid)
+        if not w or ("vp_thresholds" not in w and "vp_at_lines" not in w):
+            return json_response({"closed": False})
+        w.pop("vp_thresholds", None)
+        w.pop("vp_at_lines", None)
+        w["vp_last"] = None          # 重置基线，避免下次加回阈值时误报
+        self.watch.save_config(config)
+        return json_response({"closed": True})
 
     # ── wp 子命令 ───────────────────
 
@@ -1260,6 +1824,8 @@ async def _run_tool(tool_cls, arg: str) -> str:
         return await tool_cls().call(None, name=arg)
     if tool_cls is NearbyTownsTool:
         return await tool_cls().call(None, town=arg)
+    if tool_cls is McMMOTopTool:
+        return await tool_cls().call(None, skill=arg)
     if tool_cls is QuarterTool:
         return await tool_cls().call(None, query=arg)
     return "❌ 未知工具类型"

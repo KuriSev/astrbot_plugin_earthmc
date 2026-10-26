@@ -19,6 +19,8 @@ EarthMC Minecraft 服务器信息查询插件。支持 `/em` 命令和 LLM Agent
 ```
 查询:
   /em status/vp/town/nation/player/online/nearby/location/quarter/mm
+  /em mmo <技能>                 mcMMO 技能榜前 25 名
+  别名: /t 城镇 · /n 国家 · /res 玩家 · /vp VP · /mctop mcMMO 榜
 
 地图:
   /em map town <名>             城镇地图截图
@@ -29,7 +31,8 @@ EarthMC Minecraft 服务器信息查询插件。支持 `/em` 命令和 LLM Agent
   /em risk town <名> / nation <名> / list / scan
 
 监控:
-  /em watch vp <票数> / player add/del / town add/del / off
+  /em vp <票数> / at add|del|reset|off / atline / dnd / status / off
+  /em watch player add/del / town add/del / off
 
 市场:
   /em market list / search / add / del
