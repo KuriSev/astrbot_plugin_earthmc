@@ -12,7 +12,7 @@ from astrbot.api import logger
 from astrbot.api.event import MessageChain
 from astrbot.api.message_components import At
 
-from .api import get, post
+from ..core.api import get, post
 
 WATCH_POLL_SECONDS = 20
 WATCH_CONFIG_FILE = "earthmc_watch.json"

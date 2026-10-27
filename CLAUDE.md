@@ -29,7 +29,8 @@ docker logs -f astrbot | grep -i earthmc
 ## 架构要点
 
 - **双入口**：`main.py` 的 `/em` 命令族（含顶层别名 `/vp` `/t` `/n` `/res`）与 `tools.py` 的 LLM FunctionTool，两者共享 `api.py` 的请求/缓存层。
-- **`watch.py`** 是后台监控（VP 阈值 / 玩家上下线加城镇变动 / 城镇变动），状态落在 `plugin_data` 下的 `earthmc_watch.json`，按群隔离。
-- **`mcmmo.py`** 独立于主流程，需 `api_key`（放**请求体**而非 header，技能名大写白名单），结果缓存 180s。
+- **目录分层**：`main.py`（入口 + 装饰器）→ `commands/`（命令实现 Mixin）→ `features/`（业务能力）→ `core/`（HTTP、落盘、文案）。**`@filter.*` 只能写在 `main.py`**，AstrBot 按 `handler.__module__` 绑定实例，搬走即静默失效。
+- **`features/watch.py`** 是后台监控（VP 阈值 / 玩家上下线加城镇变动 / 城镇变动），状态落在 `plugin_data` 下的 `earthmc_watch.json`，按群隔离。
+- **`features/mcmmo.py`** 独立于主流程，需 `api_key`（放**请求体**而非 header，技能名大写白名单），结果缓存 180s。
 - **命名**：查询不区分大小写、直接透传；**比较两侧都 `.lower()`，存储与显示用服务端规范名**。这条最容易写错，细节见 `../docs/earthmc-plugin.md`「名称大小写约定」。
 - **时区**：`scan_hour` / `scan_minute` / `/em vp dnd` 一律 UTC+8；容器时钟是 UTC，用 `datetime.now(timezone.utc) + timedelta(hours=8)`，别用裸 `datetime.now()`。

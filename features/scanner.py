@@ -10,8 +10,8 @@ from datetime import datetime, timedelta, timezone
 from astrbot.api import logger
 from astrbot.api.event import MessageChain
 
-from .api import get, post
-from .tools import INACTIVE_DAYS
+from ..core.api import get, post
+from ..tools import INACTIVE_DAYS
 
 SCAN_CACHE_FILE = "earthmc_risk_scan.json"
 BATCH_SIZE = 100

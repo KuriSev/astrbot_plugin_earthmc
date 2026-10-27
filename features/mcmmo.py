@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.astr_agent_context import AstrAgentContext
 
-from .api import get_api_key, post
+from ..core.api import get_api_key, post
 
 _mcmmo_cache: dict[str, tuple[float, list]] = {}  # 技能 → (时间戳, 条目)，避免频繁命中限流
 

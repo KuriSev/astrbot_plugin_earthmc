@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.astr_agent_context import AstrAgentContext
 
-from .api import get, post, ts_str, mc_time, moon, weather, bool_emoji
+from .core.api import get, post, ts_str, mc_time, moon, weather, bool_emoji
 
 INACTIVE_DAYS = 42  # 42 天不上线即 inactive → 被销城
 
@@ -673,7 +673,7 @@ class MapTownTool(FunctionTool[AstrAgentContext]):
     })
 
     async def call(self, context, name: str = "", **kwargs) -> str:
-        from .map import fetch_markers, screenshot_area, screenshot_path
+        from .features.map import fetch_markers, screenshot_area, screenshot_path
 
         name = (name or "").strip()
         if not name:
@@ -718,10 +718,10 @@ class MapPlayerTool(FunctionTool[AstrAgentContext]):
     })
 
     async def call(self, context, name: str = "", **kwargs) -> str:
-        from .map import (fetch_players, fetch_markers,
+        from .features.map import (fetch_players, fetch_markers,
                           screenshot_area, screenshot_center,
                           screenshot_path, ZOOM_DEFAULT)
-        from .api import post as api_post
+        from .core.api import post as api_post
 
         name = (name or "").strip()
         if not name:
@@ -794,7 +794,7 @@ class MapLocationTool(FunctionTool[AstrAgentContext]):
     })
 
     async def call(self, context, x: int = 0, z: int = 0, **kwargs) -> str:
-        from .map import (screenshot_center, screenshot_path, ZOOM_DEFAULT)
+        from .features.map import (screenshot_center, screenshot_path, ZOOM_DEFAULT)
         try:
             buf = await screenshot_center(x, z, ZOOM_DEFAULT)
             path = screenshot_path()
