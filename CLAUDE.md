@@ -24,7 +24,7 @@ docker logs -f astrbot | grep -i earthmc
 
 `pages/` 静态资源改动只需刷新浏览器；改 `.py` 后走 WebUI 重载。**日常用重载，不要 `docker compose up -d` 重建**——插件依赖装在容器层，重建后会丢；`docker restart astrbot` 只在重载无效时兜底。
 
-提交在本仓库（`origin` = `J1movo/astrbot_plugin_earthmc`）里做；`metadata.yaml` 的 `version` 与 `CHANGELOG.md` 同步维护。
+提交在本仓库（`origin` = `KuriSev/astrbot_plugin_earthmc`）里做；`metadata.yaml` 的 `version` 与 `CHANGELOG.md` 同步维护。
 
 ## 架构要点
 

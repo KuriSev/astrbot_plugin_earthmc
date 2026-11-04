@@ -5,5 +5,5 @@ short_desc: EarthMC 服务器信息查询 · 销城风险 · VP 数据
 version: v2.0.0
 support_platforms: [aiocqhttp]
 astrbot_version: ">=4.0"
-author: J1movo
-repo: https://github.com/J1movo/astrbot_plugin_earthmc
+author: KuriSev
+repo: https://github.com/KuriSev/astrbot_plugin_earthmc
