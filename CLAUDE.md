@@ -26,6 +26,20 @@ docker logs -f astrbot | grep -i earthmc
 
 提交在本仓库（`origin` = `KuriSev/astrbot_plugin_earthmc`）里做；`metadata.yaml` 的 `version` 与 `CHANGELOG.md` 同步维护。
 
+**分支模型：`dev` 是唯一开发分支，`master` 只做发布快照。** GitHub 默认分支是 `master`（对外展示最新发布），日常开发全部提交到 `dev`；发版时才把 `master` fast-forward 到 `dev` 并推送。
+
+```bash
+# 日常
+git push origin dev
+
+# 发版（版本号/CHANGELOG 提交之后）
+git checkout master && git merge --ff-only dev
+git push origin master
+git checkout dev
+```
+
+`master` 不允许单独提交（只能 fast-forward），避免与 `dev` 分叉。
+
 ## 架构要点
 
 - **双入口**：`main.py` 的 `/em` 命令族（含顶层别名 `/vp` `/t` `/n` `/res`）与 `tools.py` 的 LLM FunctionTool，两者共享 `core/api.py` 的请求/缓存层。
