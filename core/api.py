@@ -108,6 +108,16 @@ async def post(path: str, body: dict) -> dict | list | None:
         return None
 
 
+async def post_chunked(path: str, names: list[str], batch: int = 50) -> list[dict]:
+    """分批 POST 查询，避开 API 单次 query 数量上限（实测 >100 会被截断）。"""
+    out: list[dict] = []
+    for i in range(0, len(names), batch):
+        data = await post(path, {"query": names[i:i + batch]})
+        if isinstance(data, list):
+            out.extend(x for x in data if isinstance(x, dict))
+    return out
+
+
 # ════════════════════════════════════════
 # 格式化
 # ════════════════════════════════════════

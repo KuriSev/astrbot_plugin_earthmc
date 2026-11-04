@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.0.0
+
+### 破坏性变更
+- **移除全服扫描**：删除 `/em risk scan`、`/em risk list` 命令与 `features/scanner.py`；`/em risk nation` 不再读取扫描缓存，改为按国家实时计算城镇临近程度
+- **移除扫描配置**：`scan_batch_size`、`scan_concurrency`、`deep_scan_max_residents`、`scan_hour`、`scan_minute`；WebUI 的「销城扫描」功能开关一并移除
+- **移除 `/em risk ruin ...`**：关注操作并入 `risk` 本身，改为 `/em risk town|nation add|del <名称>`
+- **监控数据改为 uuid 键**：`earthmc_watch.json` 的玩家/城镇、`earthmc_ruins_watch.json` 的国家/城镇均以 uuid 为键、名字仅作显示；首次检查/刷新时自动迁移。**迁移前已经改过名的实体会因旧名查不到而需要手动重新添加**
+
+### 新增
+- **变废墟时间预测**：按「最后一名居民 lastOnline + 42 天 → 下一个 UTC 00:00」精确计算；区分「城主失活即变废墟」与「先转让城主」两种分支，转让城主同样在 UTC 00:00 执行
+- **`/em risk` 状态卡**：展示推送时刻、窗口天数、数据更新时间、关注国家/城镇与窗口内城镇（读快照，不联网）
+- **废墟关注**：`/em risk town|nation add|del <名称>` 按群关注国家或单个城镇，新增后立即刷新并输出
+- **每日定时推送**：每小时刷新快照，每天 `ruins_push_hour:ruins_push_minute`（UTC+8）推送一次「N 天内会变废墟或转让城主」的城镇；到点未推送不补发
+- **配置项**：`ruins_alert_days`（窗口天数，默认 7）、`ruins_push_hour`（默认 18）、`ruins_push_minute`（默认 0）
+- **uuid 稳定标识**：玩家监控、城镇监控、国家/城镇关注全部改为 uuid 键，改名不再导致监控失效；玩家的城镇基线用 `town_uuid` 比较
+
+### 变更
+- `/em risk town` 输出简化：只显示 UTC+8 时间（带年份）、剩余天数、城主、开放/封闭状态；不再显示风险等级与逐人剩余天数
+- `/players` 查不到的居民不参与 `max` 计算；**城主查不到时按“未知”处理**，不预测转让并标注 `（数据不可用）`
+
+### 修复
+- **批量查询被 API 截断**：单次 `/towns`、`/players` 查询超过约 100 个会被截断，导致国家城镇只显示一部分、居民数据缺失被误判为 inactive；现统一按 50 个一批
+- **城主数据不可用被误判为失活**：关闭 API 的城主曾产生大量「转让城主·剩 0 天」误报，现按未知处理
+
 ## v1.15.1
 
 ### 新增
@@ -8,6 +32,8 @@
 ### 变更
 - `/em` 帮助文本（`HELP_TEXT`）别名行补充 `/mctop mcMMO 榜`
 - README 命令清单补充 `/em mmo <技能>` 与顶层别名说明
+- **代码结构分层**：`main.py` 拆为 `core/`（`api` HTTP 缓存、`store` 落盘、`texts` 文案、`constants` 共享常量）、`commands/`（命令实现 Mixin）、`features/`（业务能力）、`webapi.py`（WebUI API）；`main.py` 1840 → 353 行，只保留 `@filter` 装饰器方法、`cmd_em` 分发与生命周期。**命令输出与行为不变**
+- **销城风险计算独立**：`_calc_risk` / `_nation_risk` / `_list_members` / `_list_nation_towns` 及 4 个风险类 Tool 从 `tools.py` 移入 `features/risk.py`，命令层与全服扫描器不再反向依赖 LLM 工具层；`INACTIVE_DAYS` 移入 `core/constants.py`（`tools.py` 807 → 438 行）
 
 ## v1.15.0
 

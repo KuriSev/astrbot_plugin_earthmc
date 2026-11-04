@@ -2,7 +2,7 @@ name: astrbot_plugin_earthmc
 display_name: EarthMC
 desc: 查询 EarthMC Minecraft 服务器的状态、城镇、国家、玩家、在线列表等信息，支持销城风险评估、市场交易信息记录、VP 监测。支持 /em 命令和自然语言两种查询方式。
 short_desc: EarthMC 服务器信息查询 · 销城风险 · VP 数据
-version: v1.15.1
+version: v2.0.0
 support_platforms: [aiocqhttp]
 astrbot_version: ">=4.0"
 author: J1movo

@@ -77,7 +77,6 @@ async function selectConfig(id, type) {
   el("featWatch").checked = f.watch !== false;
   el("featMarket").checked = f.market !== false;
   el("featMap").checked = f.map !== false;
-  el("featScanner").checked = f.scanner !== false;
   el("featCommands").checked = f.commands !== false;
 
   featureDirty = false;
@@ -128,7 +127,7 @@ async function enterConfig(id, type) {
   el("editTitle").textContent = `${type === "friend" ? "私聊" : "群聊"}:${id}`;
   el("editType").value = type;
   el("editId").value = id;
-  ["featWatch", "featMarket", "featMap", "featScanner", "featCommands"].forEach((fid) => {
+  ["featWatch", "featMarket", "featMap", "featCommands"].forEach((fid) => {
     el(fid).checked = true;
   });
   featureDirty = false;
@@ -140,7 +139,7 @@ async function enterConfig(id, type) {
 
 // ── 功能开关 ─────────────────────
 
-["featWatch", "featMarket", "featMap", "featScanner", "featCommands"].forEach((fid) => {
+["featWatch", "featMarket", "featMap", "featCommands"].forEach((fid) => {
   el(fid).addEventListener("change", () => markDirty("feature"));
 });
 
@@ -151,7 +150,6 @@ el("saveFeatureBtn").addEventListener("click", async () => {
     watch: el("featWatch").checked,
     market: el("featMarket").checked,
     map: el("featMap").checked,
-    scanner: el("featScanner").checked,
     commands: el("featCommands").checked,
   };
   try {

@@ -21,10 +21,11 @@ HELP_TEXT = """🌍 EarthMC 查询
 也可直接 @bot 用自然语言询问"""
 
 RISK_HELP = """销城分析:
-  /em risk town <名>      单镇评估
-  /em risk nation <名>    国家排名
-  /em risk list [天] [页]  全服名单
-  /em risk scan           手动全服扫描"""
+  /em risk                       查看废墟关注状态
+  /em risk town <名>             单镇评估（含变废墟时间）
+  /em risk nation <名>           国家销城情况
+  /em risk town add|del <名>     关注/取消关注城镇
+  /em risk nation add|del <名>   关注/取消关注国家"""
 
 MARKET_HELP = """市场交易:
   /em market list                   查看全部

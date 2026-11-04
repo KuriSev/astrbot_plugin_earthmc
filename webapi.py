@@ -35,7 +35,7 @@ class WebAPIMixin:
                         result.append({
                             "id": uid, "type": ctype,
                             "features": {"watch": True, "market": True,
-                                         "map": True, "scanner": True, "commands": True}
+                                         "map": True, "commands": True}
                         })
                         seen.add(uid)
             except Exception:
@@ -47,7 +47,7 @@ class WebAPIMixin:
                 result.append({
                     "id": gid, "type": "group",
                     "features": {"watch": True, "market": True,
-                                 "map": True, "scanner": True, "commands": True}
+                                 "map": True, "commands": True}
                 })
                 seen.add(gid)
         return json_response(result)

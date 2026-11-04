@@ -3,8 +3,10 @@ from ..tools import (
     ServerStatusTool, VotePartyTool, TownTool, NationTool,
     PlayerTool, OnlinePlayersTool, NearbyTownsTool,
     LocationTool, QuarterTool, MysteryMasterTool,
-    TownRiskTool, TownMembersTool, NationTownsTool, NationRiskTool,
     MapTownTool, MapPlayerTool, MapLocationTool,
+)
+from ..features.risk import (
+    TownRiskTool, TownMembersTool, NationTownsTool, NationRiskTool,
 )
 from ..features.mcmmo import McMMOTopTool
 from ..features.market import (

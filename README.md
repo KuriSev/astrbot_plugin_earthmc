@@ -9,7 +9,7 @@ EarthMC Minecraft 服务器信息查询插件。支持 `/em` 命令和 LLM Agent
 - **附近城镇**: 坐标周围领地分布
 - **在线列表**: 当前在线玩家
 - **Mystery Master**: 小游戏排行榜
-- **销城风险分析**: 单镇评估、国家排名、全服扫描
+- **销城风险分析**: 单镇变废墟时间、国家销城情况、国家/城镇废墟关注与每日推送
 - **自动监控**: VP 阈值提醒、玩家上下线、城镇变动
 - **市场交易**: 传送点交易信息板
 - **地图截图**: 城镇/玩家/坐标的地图截图
@@ -28,7 +28,9 @@ EarthMC Minecraft 服务器信息查询插件。支持 `/em` 命令和 LLM Agent
   /em map <x> <z>               坐标截图
 
 销城分析:
-  /em risk town <名> / nation <名> / list / scan
+  /em risk                   查看废墟关注状态
+  /em risk town <名> / nation <名>
+  /em risk town|nation add|del <名>
 
 监控:
   /em vp <票数> / at add|del|reset|off / atline / dnd / status / off
@@ -46,15 +48,15 @@ EarthMC Minecraft 服务器信息查询插件。支持 `/em` 命令和 LLM Agent
 
 ## 配置
 
-WebUI → 插件管理 → EarthMC，可调 9 个配置项。
+WebUI → 插件管理 → EarthMC，可调 8 个配置项。
 
 ## 数据
 
 | 文件 | 内容 |
 |------|------|
 | `earthmc_watch.json` | 监控配置 |
-| `earthmc_risk_scan.json` | 销城扫描结果 |
 | `earthmc_market.json` | 市场交易记录 |
+| `earthmc_ruins_watch.json` | 废墟关注列表与快照 |
 
 ## 依赖
 

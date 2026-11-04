@@ -50,6 +50,9 @@ class WatchCommandMixin:
         sub_action = parts[0].lower() if parts else ""
         names_str = parts[1] if len(parts) > 1 else ""
 
+        from ..core.api import post_chunked
+        from ..core.utils import is_uuid
+
         config = self.watch.load_config()
         if group_key not in config:
             config[group_key] = {"umo": event.unified_msg_origin}
@@ -61,36 +64,39 @@ class WatchCommandMixin:
             if not names_str:
                 return ("❌ 用法: /em watch player add <玩家名> ...\n"
                         "例如: /em watch player add Fixer Warriorrr")
-            existing_lower = {k.lower() for k in watched}
-            new = [n.strip() for n in names_str.replace(",", " ").split()
-                   if n.strip() and n.strip().lower() not in existing_lower]
-            if not new:
+            existing_names = {(e.get("name") or k).lower() for k, e in watched.items()}
+            wanted = [n.strip() for n in names_str.replace(",", " ").split()
+                      if n.strip() and n.strip().lower() not in existing_names]
+            if not wanted:
                 return "⚠ 这些玩家已在监控列表中。"
 
-            # 校验玩家是否存在，并记录当前城镇作为基线
-            from ..core.api import post as api_post
-            data = await api_post("/players", {"query": new})
-            existing = set()
-            town_map = {}
-            canon = {}
-            if data and isinstance(data, list):
-                existing = {p.get("name", "").lower() for p in data}
-                town_map = {p.get("name", "").lower(): (p.get("town") or {}).get("name", "")
-                            for p in data}
-                canon = {p.get("name", "").lower(): p.get("name", "")
-                         for p in data if p.get("name")}
+            # 解析 uuid：改名不影响监控；town_uuid 作为城镇基线
+            data = await post_chunked("/players", wanted)
+            by_name = {p.get("name", "").lower(): p for p in data if p.get("name")}
+            existing_uuids = {e.get("uuid") or (k if is_uuid(k) else "")
+                              for k, e in watched.items()}
 
-            valid, invalid = [], []
-            for name in new:
-                (valid if name.lower() in existing else invalid).append(name)
+            added, invalid = [], []
+            for name in wanted:
+                p = by_name.get(name.lower())
+                uid = (p or {}).get("uuid")
+                if not p or not uid:
+                    invalid.append(name)
+                    continue
+                if uid in existing_uuids:
+                    continue
+                town = p.get("town") or {}
+                watched[uid] = {
+                    "uuid": uid,
+                    "name": p.get("name", name),
+                    "town_uuid": town.get("uuid", ""),
+                    "town": town.get("name", ""),
+                    "online": False,
+                }
+                existing_uuids.add(uid)
+                added.append(watched[uid]["name"])
 
-            added = []
-            for name in valid:
-                cname = canon.get(name.lower(), name)   # 落服务端规范大小写
-                watched[cname] = {"online": False,
-                                  "town": town_map.get(name.lower(), "")}
-                added.append(cname)
-            if valid:
+            if added:
                 self.watch.save_config(config)
                 self.watch.ensure_running()
 
@@ -101,16 +107,22 @@ class WatchCommandMixin:
                 msg_parts.append(f"❌ 玩家不存在: {', '.join(invalid)}")
             return "\n".join(msg_parts) if msg_parts else "⚠ 未能添加任何玩家。"
 
-        # 删除
+        # 删除（名字或 uuid 都行）
         if sub_action in ("del", "delete", "remove", "删除", "移除"):
             if not names_str:
                 return ("❌ 用法: /em watch player del <玩家名>\n"
                         "例如: /em watch player del Fixer")
-            names = [n.strip() for n in names_str.replace(",", " ").split()]
-            names_lower = {n.lower() for n in names}
-            removed = [k for k in watched if k.lower() in names_lower]
-            for k in removed:
-                del watched[k]
+            targets = [n.strip().lower() for n in names_str.replace(",", " ").split() if n.strip()]
+            removed: list[str] = []
+            for target in targets:
+                for key in list(watched):
+                    e = watched[key]
+                    if (key.lower() == target
+                            or (e.get("uuid") or "").lower() == target
+                            or (e.get("name") or "").lower() == target):
+                        removed.append(e.get("name") or key)
+                        del watched[key]
+                        break
             if not removed:
                 return "⚠ 这些玩家不在监控列表中。"
             if not watched:
@@ -125,11 +137,14 @@ class WatchCommandMixin:
                     "添加: /em watch player add <玩家名>\n"
                     "例如: /em watch player add Fixer")
 
+        rows = sorted(watched.items(),
+                      key=lambda kv: (kv[1].get("name") or kv[0]).lower())
         lines = []
-        for name, state in sorted(watched.items()):
+        for key, state in rows:
+            name = state.get("name") or key
             s = "🟢 在线" if state.get("online") else "🔴 离线"
             lines.append(f"  {name}  {s}")
-        return (f"📊 玩家上线监控 ({len(watched)} 人)\n"
+        return (f"📊 玩家上线监控 ({len(rows)} 人)\n"
                 f"━━━━━━━━━━━━━━━━\n" + "\n".join(lines) +
                 f"\n━━━━━━━━━━━━━━━━\n"
                 f"添加: /em watch player add <名>\n"
@@ -141,6 +156,9 @@ class WatchCommandMixin:
         sub_action = parts[0].lower() if parts else ""
         names_str = parts[1] if len(parts) > 1 else ""
 
+        from ..core.api import post_chunked
+        from ..core.utils import is_uuid
+
         config = self.watch.load_config()
         if group_key not in config:
             config[group_key] = {"umo": event.unified_msg_origin}
@@ -151,56 +169,57 @@ class WatchCommandMixin:
             if not names_str:
                 return ("❌ 用法: /em watch town add <城镇名> ...\n"
                         "例如: /em watch town add Beijing Shanghai")
-            existing_lower = {k.lower() for k in watched}
-            new = [n.strip() for n in names_str.replace(",", " ").split()
-                   if n.strip() and n.strip().lower() not in existing_lower]
-            if not new:
+            wanted = [n.strip() for n in names_str.replace(",", " ").split() if n.strip()]
+            existing_names = {(e.get("name") or k).lower() for k, e in watched.items()}
+            wanted = [n for n in wanted if n.lower() not in existing_names]
+            if not wanted:
                 return "⚠ 这些城镇已在监控列表中。"
 
-            from ..core.api import post as tpost
-            tdata = await tpost("/towns", {"query": new})
-            valid, invalid = [], []
-            if tdata and isinstance(tdata, list):
-                existing = {t.get("name", "").lower() for t in tdata}
-                for n in new:
-                    (valid if n.lower() in existing else invalid).append(n)
-            else:
-                invalid = new
+            tdata = await post_chunked("/towns", wanted)
+            t_map = {t.get("name", "").lower(): t for t in tdata if t.get("name")}
+            valid = [n for n in wanted if n.lower() in t_map]
+            invalid = [n for n in wanted if n.lower() not in t_map]
 
-            # 拉取城镇的当前状态作为初始值
-            for t in tdata:
-                if isinstance(t, dict):
-                    tname = t.get("name", "")
-                    if tname.lower() in [n.lower() for n in valid]:
-                        stats = t.get("stats") or {}
-                        cur_names = sorted(
-                            r.get("name", "") for r in (t.get("residents") or []))
-                        watched[tname] = {
-                            "resident_count": stats.get("numResidents", 0),
-                            "residents": cur_names,
-                            "blocks": stats.get("numTownBlocks", 0),
-                            "maxBlocks": stats.get("maxTownBlocks", 0),
-                            "balance": stats.get("balance", 0),
-                            "mayor": (t.get("mayor") or {}).get("name", ""),
-                            "nation": (t.get("nation") or {}).get("name", ""),
-                            "is_open": (t.get("status") or {}).get("isOpen", False),
-                            "is_ruined": (t.get("status") or {}).get("isRuined", False),
-                        }
-            if valid:
+            existing_uuids = {e.get("uuid") or (k if is_uuid(k) else "")
+                              for k, e in watched.items()}
+            added: list[str] = []
+            for n in valid:
+                t = t_map[n.lower()]
+                uid = t.get("uuid")
+                if not uid or uid in existing_uuids:
+                    continue
+                stats = t.get("stats") or {}
+                cur_names = sorted(r.get("name", "") for r in (t.get("residents") or []))
+                watched[uid] = {
+                    "uuid": uid,
+                    "name": t.get("name", n),
+                    "resident_count": stats.get("numResidents", 0),
+                    "residents": cur_names,
+                    "blocks": stats.get("numTownBlocks", 0),
+                    "maxBlocks": stats.get("maxTownBlocks", 0),
+                    "balance": stats.get("balance", 0),
+                    "mayor": (t.get("mayor") or {}).get("name", ""),
+                    "nation": (t.get("nation") or {}).get("name", ""),
+                    "is_open": (t.get("status") or {}).get("isOpen", False),
+                    "is_ruined": (t.get("status") or {}).get("isRuined", False),
+                }
+                existing_uuids.add(uid)
+                added.append(uid)
+
+            if added:
                 self.watch.save_config(config)
                 self.watch.ensure_running()
 
             lines = []
-            if valid:
+            if added:
                 lines.append("✅ 已添加城镇监控:")
-                for t in tdata:
-                    if isinstance(t, dict) and t.get("name", "").lower() in [n.lower() for n in valid]:
-                        s = t.get("stats") or {}
-                        mayor = (t.get("mayor") or {}).get("name", "?")
-                        nation = (t.get("nation") or {}).get("name", "无")
-                        lines.append(
-                            f"  {t['name']}({nation})  {s.get('numResidents',0)}人  "
-                            f"{s.get('numTownBlocks',0)}方块  {s.get('balance',0)}G  市长{mayor}")
+                for uid in added:
+                    e = watched.get(uid) or {}
+                    lines.append(
+                        f"  {e.get('name')}({e.get('nation') or '无'})  "
+                        f"{e.get('resident_count', 0)}人  "
+                        f"{e.get('blocks', 0)}方块  {e.get('balance', 0)}G  "
+                        f"市长{e.get('mayor') or '?'}")
             if invalid:
                 lines.append("❌ 城镇不存在: " + ", ".join(invalid))
             return "\n".join(lines) if lines else "⚠ 未能添加任何城镇。"
@@ -209,11 +228,18 @@ class WatchCommandMixin:
             if not names_str:
                 return ("❌ 用法: /em watch town del <城镇名>\n"
                         "例如: /em watch town del Beijing")
-            names = [n.strip() for n in names_str.replace(",", " ").split()]
-            names_lower = {n.lower() for n in names}
-            removed = [k for k in watched if k.lower() in names_lower]
-            for k in removed:
-                del watched[k]
+            targets = [n.strip() for n in names_str.replace(",", " ").split() if n.strip()]
+            removed: list[str] = []
+            for target in targets:
+                tl = target.lower()
+                for wkey in list(watched):
+                    e = watched[wkey]
+                    if (wkey.lower() == tl
+                            or (e.get("name") or "").lower() == tl
+                            or (e.get("uuid") or "").lower() == tl):
+                        removed.append(e.get("name") or wkey)
+                        del watched[wkey]
+                        break
             if not removed:
                 return "⚠ 这些城镇不在监控列表中。"
             if not watched:
@@ -226,9 +252,11 @@ class WatchCommandMixin:
                     "添加: /em watch town add <城镇名>\n"
                     "例如: /em watch town add Beijing")
 
-        lines = [f"📊 城镇变动监控 ({len(watched)} 个)"]
-        for name in sorted(watched):
-            old = watched[name]
+        items = sorted(watched.items(),
+                       key=lambda kv: (kv[1].get("name") or kv[0]).lower())
+        lines = [f"📊 城镇变动监控 ({len(items)} 个)"]
+        for key, old in items:
+            name = old.get("name") or key
             r = old.get("resident_count", "?")
             b = old.get("blocks", "?")
             bal = old.get("balance", "?")

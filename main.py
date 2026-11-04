@@ -23,7 +23,7 @@ from .webapi import WebAPIMixin
 from .tools import TownTool, NationTool, PlayerTool, LocationTool, VotePartyTool
 from .features.mcmmo import McMMOTopTool
 from .features.watch import WatchManager
-from .features.scanner import TownRiskScanner
+from .features.ruins_watch import RuinsWatchManager, RuinsChecker
 from .features.market import MarketManager, set_market_manager
 from .features.waypoints import WaypointManager, set_waypoint_manager
 
@@ -51,14 +51,13 @@ class EarthMCPlugin(
             poll_seconds=watch_interval_ms / 1000,
             town_check_interval=config.get("town_check_interval", 3),
         )
-        self.scanner = TownRiskScanner(
-            self.name or "astrbot_plugin_earthmc",
+        self.ruins_watch = RuinsWatchManager(self.name or "astrbot_plugin_earthmc")
+        self.ruins_checker = RuinsChecker(
             self.context.send_message,
-            batch_size=config.get("scan_batch_size", 100),
-            concurrency=config.get("scan_concurrency", 5),
-            deep_scan_max_residents=config.get("deep_scan_max_residents", 10),
-            scan_hour=config.get("scan_hour", 18),
-            scan_minute=config.get("scan_minute", 30),
+            self.ruins_watch,
+            alert_days=config.get("ruins_alert_days", 7),
+            push_hour=config.get("ruins_push_hour", 18),
+            push_minute=config.get("ruins_push_minute", 0),
         )
 
         self.market = MarketManager(self.name or "astrbot_plugin_earthmc")
@@ -344,10 +343,10 @@ class EarthMCPlugin(
     @filter.on_astrbot_loaded()
     async def _start_background(self):
         self.watch.start()
-        await self.scanner.start_scheduler()
+        self.ruins_checker.start()
 
     async def terminate(self):
         await self.watch.stop()
-        await self.scanner.stop()
+        await self.ruins_checker.stop()
         await close_session()
         logger.info("[EarthMC] 插件已卸载")

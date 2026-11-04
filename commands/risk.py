@@ -1,118 +1,111 @@
-"""RiskMixin：从 main.py 拆出的命令实现。"""
+"""RiskMixin：销城分析、国家/城镇废墟关注与状态查看。"""
 from __future__ import annotations
 
-from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
-from astrbot.api.event import MessageChain
-import asyncio
 
 from ..core.texts import RISK_HELP
 
+_ADD_OPS = {"add", "添加"}
+_DEL_OPS = {"del", "delete", "remove", "删除", "移除"}
+
+
 class RiskMixin:
     async def _handle_risk(self, event: AstrMessageEvent,
-                            action: str, value: str) -> str:
-        action = action.lower()
+                           action: str, value: str) -> str:
+        action = (action or "").lower()
+        value = (value or "").strip()
 
         if action in ("help",):
             return RISK_HELP
 
-        if action in ("nation",):
-            nation = value.strip() if value.strip() else ""
-            if not nation:
-                return "❌ 用法: /em risk nation <国家名>"
-            from ..tools import _nation_risk
-            return await _nation_risk(nation)
+        # 裸 /em risk → 关注状态卡（读快照，不联网）
+        if action in ("", "status", "列表"):
+            gid = event.message_obj.group_id
+            if not gid:
+                return RISK_HELP
+            checker = getattr(self, "ruins_checker", None)
+            if checker is None:
+                return "❌ 废墟关注未初始化。"
+            return checker.status_text(str(gid))
 
-        if action in ("scan",):
-            umo = event.unified_msg_origin
-
-            async def done(risk_count: int, total: int):
-                try:
-                    if risk_count < 0:
-                        await self.context.send_message(
-                            umo, MessageChain().message(
-                                "❌ 全服扫描失败，无法获取城镇列表。"))
-                    else:
-                        await self.context.send_message(
-                            umo, MessageChain().message(
-                                f"✅ 全服扫描完成\n━━━━━━━━━━━━━━━━\n"
-                                f"共检查 {total} 个城镇\n"
-                                f"5天内可能销城 {risk_count} 个\n"
-                                f"━━━━━━━━━━━━━━━━\n"
-                                f"查看名单: /em risk list"))
-                    logger.info("[EarthMC] 扫描通知已发送")
-                except Exception as e:
-                    logger.error(f"[EarthMC] 扫描通知发送失败: {e}")
-
-            asyncio.create_task(self.scanner.scan(on_done=done))
-            return "🔍 开始全服扫描，请稍候...完成后将自动通知。"
-
-        if action in ("list",):
-            # 解析: /em risk list [天数] [页码]
-            # 天数=0 仅Ruins, 1~N 各自独立显示该天数段
-            parts = value.split() if value.strip() else []
-            days = 5
-            page = 1
-            if len(parts) >= 1 and parts[0].isdigit():
-                days = int(parts[0])
-            if len(parts) >= 2 and parts[1].isdigit():
-                page = int(parts[1])
-            PAGE_SIZE = 20
-
-            # 按 days 决定筛选范围（独立，不累计）
-            if days == 0:
-                label = "Ruins"
-                lo, hi = 0, 0
-            elif days == 1:
-                label = "1天"
-                lo, hi = 0.01, 1
-            else:
-                label = f"{days}天"
-                lo, hi = days, days + 0.99
-
-            towns = self.scanner.get_risklist(days)
-            updated = self.scanner.cache_age()
-            # 按独立范围过滤
-            towns = [t for t in towns if lo <= t["days_left"] <= hi]
-            if not towns:
-                return (f"📋 {label}销城风险: 无\n"
-                        f"更新时间 {updated}\n"
-                        f"手动扫描: /em risk scan")
-
-            total_pages = max((len(towns) + PAGE_SIZE - 1) // PAGE_SIZE, 1)
-            page = max(1, min(page, total_pages))
-            start = (page - 1) * PAGE_SIZE
-            end = page * PAGE_SIZE
-
-            lines = [f"📋 {label}销城风险 ({len(towns)} 个)  更新 {updated}  第{page}/{total_pages}页"]
-            shown = 0
-            for t in towns:
-                if shown >= end:
-                    break
-                if shown < start:
-                    shown += 1
-                    continue
-                shown += 1
-                d = t["days_left"]
-                if d < 1:
-                    day_str = "不足1天"
-                elif d < 2:
-                    day_str = f"约{int(d)}天"
-                else:
-                    day_str = f"{int(d)}天"
-                lines.append(
-                    f"  {t['name']}({t['nation']}) "
-                    f"剩{day_str} 活跃{t['active_count']}人 ★{t['defense']}")
-            if page < total_pages:
-                lines.append(f"下一页: /em risk list {days} {page + 1}")
-            return "\n".join(lines)
-
-        if action in ("town",):
-            from ..tools import _calc_risk
-            return await _calc_risk(value) if value else "❌ 用法: /em risk town <城镇名>"
+        if action in ("town", "nation"):
+            op, _, name = value.partition(" ")
+            op = op.lower()
+            name = name.strip()
+            if op in _ADD_OPS:
+                return await self._risk_watch_add(event, action, name, value)
+            if op in _DEL_OPS:
+                return await self._risk_watch_del(event, action, name, value)
+            # 否则整段当作名称做实时分析
+            if not value:
+                return (f"❌ 用法: /em risk {action} <名称>" if action == "town"
+                        else "❌ 用法: /em risk nation <国家名>")
+            if action == "town":
+                from ..features.risk import _calc_risk
+                return await _calc_risk(value)
+            from ..features.risk import _nation_risk
+            return await _nation_risk(value)
 
         return ("❌ 用法:\n"
-                "  /em risk town <名>    评估单个城镇\n"
-                "  /em risk nation <名>  国家销城排名\n"
-                "  /em risk list [天] [页] 查看风险名单\n"
-                "  /em risk scan          手动全服扫描")
+                "  /em risk                查看废墟关注状态\n"
+                "  /em risk town <名>      评估单个城镇\n"
+                "  /em risk nation <名>    国家销城情况\n"
+                "  /em risk town add|del <名>    关注/取消关注城镇\n"
+                "  /em risk nation add|del <名>  关注/取消关注国家")
+
+    async def _risk_watch_add(self, event: AstrMessageEvent,
+                              kind: str, name: str, raw: str) -> str:
+        gid = event.message_obj.group_id
+        if not gid:
+            return "❌ 废墟关注仅在群聊中可用。"
+        mgr = getattr(self, "ruins_watch", None)
+        checker = getattr(self, "ruins_checker", None)
+        if mgr is None or checker is None:
+            return "❌ 废墟关注未初始化。"
+        if not name:
+            return (f"❌ 用法: /em risk {'town' if kind == 'town' else 'nation'} add <名称>")
+
+        key, display = name, name
+        if kind == "town":
+            # 先解析 uuid：改名不影响关注，名字只用于显示
+            from ..core.api import post as api_post
+            data = await api_post("/towns", {"query": [name]})
+            if not data or not isinstance(data, list) or not data:
+                return f"❌ 未找到城镇「{name}」，未加入关注。"
+            t = data[0]
+            key = t.get("uuid") or ""
+            display = t.get("name") or name
+            if not key:
+                return f"❌ 未获取到城镇「{name}」的 uuid，未加入关注。"
+            ok, res = mgr.add_town(str(gid), key, display, event.unified_msg_origin)
+        else:
+            from ..core.api import post as api_post
+            data = await api_post("/nations", {"query": [name]})
+            if not data or not isinstance(data, list) or not data:
+                return f"❌ 未找到国家「{name}」，未加入关注。"
+            n = data[0]
+            key = n.get("uuid") or ""
+            display = n.get("name") or name
+            if not key:
+                return f"❌ 未获取到国家「{name}」的 uuid，未加入关注。"
+            ok, res = mgr.add_nation(str(gid), key, display, event.unified_msg_origin)
+        if not ok:
+            return res
+
+        # 立刻刷新并输出该对象的当前情况
+        _, found = await checker.refresh()
+        return checker.added_text(str(gid), kind, key, display, found)
+
+    async def _risk_watch_del(self, event: AstrMessageEvent,
+                              kind: str, name: str, raw: str) -> str:
+        gid = event.message_obj.group_id
+        if not gid:
+            return "❌ 废墟关注仅在群聊中可用。"
+        mgr = getattr(self, "ruins_watch", None)
+        if mgr is None:
+            return "❌ 废墟关注未初始化。"
+        if not name:
+            return (f"❌ 用法: /em risk {'town' if kind == 'town' else 'nation'} del <名称>")
+        ok, res = (mgr.del_town(str(gid), name) if kind == "town"
+                   else mgr.del_nation(str(gid), name))
+        return f"✅ 已取消关注 {res}" if ok else res

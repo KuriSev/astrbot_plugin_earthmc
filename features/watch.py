@@ -12,7 +12,8 @@ from astrbot.api import logger
 from astrbot.api.event import MessageChain
 from astrbot.api.message_components import At
 
-from ..core.api import get, post
+from ..core.api import get, post, post_chunked
+from ..core.utils import is_uuid
 
 WATCH_POLL_SECONDS = 20
 WATCH_CONFIG_FILE = "earthmc_watch.json"
@@ -20,8 +21,7 @@ TOWN_CHECK_INTERVAL = 3  # 城镇监控每 3 个轮询周期(60s)检查一次
 
 
 def current_cn_minutes() -> int:
-    """当前中国时间(UTC+8)的当天分钟数 0..1439。
-    容器时钟为 UTC，与 scanner._seconds_until_next（scanner.py L272-279）约定一致。"""
+    """当前中国时间(UTC+8)的当天分钟数 0..1439。容器时钟为 UTC。"""
     cn = datetime.now(timezone.utc) + timedelta(hours=8)
     return cn.hour * 60 + cn.minute
 
@@ -170,12 +170,16 @@ class WatchManager:
                 # 玩家城镇检测：复用城镇检查节奏，逐玩家单查（与 /em player 同一索引，避免批量滞后）
                 p_map: dict = {}
                 if needs_player_towns:
-                    pnames = sorted({n for w in config.values()
-                                     for n in (w.get("players") or {})})
-                    for name in pnames:
-                        one = await post("/players", {"query": [name]})
+                    pkeys = sorted({k for w in config.values()
+                                    for k in (w.get("players") or {})})
+                    for key in pkeys:
+                        one = await post("/players", {"query": [key]})
                         if one and isinstance(one, list) and one:
-                            p_map[one[0].get("name", "").lower()] = one[0]
+                            p = one[0]
+                            if p.get("uuid"):
+                                p_map[p["uuid"]] = p
+                            if p.get("name"):
+                                p_map[p["name"].lower()] = p
 
                 if needs_vp:
                     logger.debug("[EarthMC] server_data keys: %s",
@@ -258,21 +262,30 @@ class WatchManager:
         if not watched:
             return
 
-        # 小写名 → 服务端规范名（显示用规范大小写）
-        online_map = {p.get("name", "").lower(): (p.get("formattedName") or p.get("name", ""))
-                      for p in data.get("players", [])}
+        players = data.get("players", [])
+        # 显示只用 name：formattedName 含「姓氏 + 名字 + 头衔」，会把头衔带进上线/下线提示
+        by_uuid = {(p.get("uuid") or "").lower(): p.get("name", "")
+                   for p in players if p.get("uuid")}
+        by_name = {p.get("name", "").lower(): p.get("name", "")
+                   for p in players if p.get("name")}
         now = time.time()
         changed = False
 
-        for name, state in list(watched.items()):
-            is_online = name.lower() in online_map
+        for key, state in list(watched.items()):
+            uid = state.get("uuid") or (key if is_uuid(key) else None)
+            if uid:
+                display = by_uuid.get(uid.lower())
+                is_online = display is not None
+            else:
+                display = by_name.get(key.lower())
+                is_online = display is not None
+            display = display or state.get("name") or key
             was_online = state.get("online", False)
 
             if is_online == was_online:
                 continue
 
             changed = True
-            display = online_map.get(name.lower(), name)   # 离线时退回存储名
             if is_online:
                 state["online_since"] = now
                 msg = f"🟢 {display} 上线"
@@ -306,64 +319,85 @@ class WatchManager:
 
     async def _check_player_towns(self, group_id: str, umo: str,
                                   w: dict, p_map: dict):
-        """检测被监控玩家的城镇变动（加入/离开/换镇）。"""
+        """检测被监控玩家的城镇变动（加入/离开/换镇）。uuid 为键，城镇用 town_uuid 比较。"""
         watched: dict = w.get("players", {})
         if not watched:
             return
         changed = False
-        renames: dict = {}       # 旧 key → 服务端规范名（纠正存量的用户输入大小写）
-        for name, state in list(watched.items()):
-            p = p_map.get(name.lower())
+        migrated: dict = {}
+
+        for key, state in list(watched.items()):
+            uid = state.get("uuid") or (key if is_uuid(key) else None)
+            p = p_map.get(uid) if uid else p_map.get(key.lower())
+            if not p and state.get("name"):
+                p = p_map.get(state["name"].lower())
             if not p:
-                logger.debug("[EarthMC] 玩家 %s 城镇数据缺失，跳过", name)
+                logger.debug("[EarthMC] 玩家 %s 城镇数据缺失，跳过", state.get("name") or key)
+                migrated[key] = state
                 continue
-            # 用服务端规范名显示（/players 对离线玩家也返回）
-            display = p.get("formattedName") or p.get("name") or name
-            if display != name and display.lower() == name.lower():
-                renames[name] = display
+
+            uid = p.get("uuid") or uid or key
+            if state.get("uuid") != uid or key != uid:
+                state["uuid"] = uid
+                changed = True
+            display = p.get("name") or state.get("name") or key
+            if state.get("name") != display:
+                state["name"] = display
+                changed = True
+
             st = p.get("status") or {}
             has_town = bool(st.get("hasTown"))
-            cur = (p.get("town") or {}).get("name", "") if has_town else ""
-            old = state.get("town")
-            logger.debug("[EarthMC] 玩家城镇 %s: old=%r cur=%r hasTown=%s town=%s",
-                         name, old, cur, st.get("hasTown"), p.get("town"))
-            if old is None:          # 首次观测：只建基线，不报变动（兼容旧配置）
-                state["town"] = cur
+            town = p.get("town") or {}
+            cur_uuid = (town.get("uuid") or "") if has_town else ""
+            cur_name = (town.get("name") or "") if has_town else ""
+            old_uuid = state.get("town_uuid")
+            old_name = state.get("town")
+
+            logger.debug("[EarthMC] 玩家城镇 %s: old=%r/%r cur=%r/%r hasTown=%s",
+                         display, old_name, old_uuid, cur_name, cur_uuid, has_town)
+
+            if old_uuid is None and old_name is None:      # 首次观测：只建基线
+                state["town"] = cur_name
+                state["town_uuid"] = cur_uuid
                 changed = True
+                migrated[uid] = state
                 continue
-            if has_town and not cur:
-                # 有城镇但名称未同步（新建城镇关联延迟）：暂不改 state，下轮再查
-                logger.info("[EarthMC] 玩家 %s 有城镇但名称未同步，跳过本轮 town=%s",
-                            name, p.get("town"))
+            if has_town and not cur_name:
+                # 有城镇但名称未同步（新建城镇关联延迟）：下轮再查
+                migrated[uid] = state
                 continue
-            if cur == old:
+
+            same = (old_uuid == cur_uuid) if old_uuid is not None else (old_name == cur_name)
+            if same:
+                if state.get("town") != cur_name or state.get("town_uuid") != cur_uuid:
+                    state["town"] = cur_name
+                    state["town_uuid"] = cur_uuid
+                    changed = True
+                migrated[uid] = state
                 continue
-            if old and cur:
-                msg = f"🏘 {display} 离开了 {old}，加入了 {cur}"
-            elif cur:
-                msg = f"🏘 {display} 加入了城镇 {cur}"
-            elif old:
-                msg = f"🚪 {display} 离开了城镇 {old}（成为游民）"
+
+            old_disp = old_name or ""
+            if old_disp and cur_name:
+                msg = f"🏘 {display} 离开了 {old_disp}，加入了 {cur_name}"
+            elif cur_name:
+                msg = f"🏘 {display} 加入了城镇 {cur_name}"
             else:
-                continue
-            state["town"] = cur
+                msg = f"🚪 {display} 离开了城镇 {old_disp}（成为游民）"
+
+            state["town"] = cur_name
+            state["town_uuid"] = cur_uuid
             try:
                 await self._send(umo, MessageChain().message(msg))
             except Exception as e:
                 logger.error(f"[EarthMC] Watch 玩家城镇发送失败: {e}")
             changed = True
-
-        if renames:
-            for old_key, new_key in renames.items():
-                if old_key in watched and new_key not in watched:
-                    watched[new_key] = watched.pop(old_key)
-            changed = True
+            migrated[uid] = state
 
         if changed:
             config = self.load_config()
             gw = config.get(group_id)
             if gw:
-                gw["players"] = watched
+                gw["players"] = migrated
                 self.save_config(config)
 
     # ── 城镇变动检查 ──────────────────
@@ -373,23 +407,40 @@ class WatchManager:
         if not watched:
             return
 
-        # 一次批量查所有被监控的城镇
-        tnames = list(watched.keys())
-        data = await post("/towns", {"query": tnames})
-        if not data or not isinstance(data, list):
+        # 已迁移条目按 uuid 查；旧条目按名字查（迁移期兼容）
+        uuids, legacy = [], []
+        for key, entry in watched.items():
+            uid = entry.get("uuid") or (key if is_uuid(key) else None)
+            if uid:
+                uuids.append(uid)
+            else:
+                legacy.append(key)
+        data = await post_chunked("/towns", uuids + legacy)
+        if not data:
             return
 
-        t_map = {t.get("name", "").lower(): t for t in data}
-        changed = False
-        renames: dict = {}          # 旧 key → 服务端规范名（纠正存量大小写）
+        by_uuid = {t.get("uuid"): t for t in data if t.get("uuid")}
+        by_name = {t.get("name", "").lower(): t for t in data if t.get("name")}
 
-        for name, old in list(watched.items()):
-            td = t_map.get(name.lower(), {})
-            if not td:
+        changed = False
+        migrated: dict = {}
+
+        for key, old in list(watched.items()):
+            uid = old.get("uuid") or (key if is_uuid(key) else None)
+            td = by_uuid.get(uid) if uid else by_name.get(key.lower())
+            if td is None:
+                migrated[key] = old          # 数据缺失：保留旧条目继续重试
                 continue
-            display = td.get("name") or name    # 显示用服务端规范名
-            if display != name and display.lower() == name.lower():
-                renames[name] = display
+
+            uid = td.get("uuid") or uid or key
+            if old.get("uuid") != uid or key != uid:
+                old["uuid"] = uid
+                changed = True
+            display = td.get("name") or old.get("name") or key
+            if old.get("name") != display:
+                old["name"] = display
+                changed = True
+
             stats = td.get("stats") or {}
             mayor = (td.get("mayor") or {}).get("name", "?")
             nation = (td.get("nation") or {}).get("name", "无")
@@ -400,20 +451,17 @@ class WatchManager:
             is_open = (td.get("status") or {}).get("isOpen", False)
             is_ruined = (td.get("status") or {}).get("isRuined", False)
 
-            # 当前居民名单
             cur_names = {r.get("name", "") for r in (td.get("residents") or [])}
             old_residents = old.get("residents", [])
             is_migrate = isinstance(old_residents, int)  # 旧格式（整型人数）
             if is_migrate:
-                old_names = set(cur_names)  # 首次初始化，不报变动
+                old_names = set(cur_names)
             else:
                 old_names = set(old_residents)
 
             msgs = []
-            # 人数 + 成员变化
-            # 兼容旧格式（residents 存的是 int 而非 list）
             if is_migrate:
-                old_r = residents  # 首次不报人数变化
+                old_r = residents
             else:
                 old_r = old.get("resident_count", 0)
             if residents != old_r:
@@ -430,7 +478,6 @@ class WatchManager:
                 old["resident_count"] = residents
                 old["residents"] = sorted(cur_names)
 
-            # 方块
             old_b = old.get("blocks", 0)
             if blocks != old_b:
                 diff = blocks - old_b
@@ -439,7 +486,6 @@ class WatchManager:
                 old["blocks"] = blocks
                 old["maxBlocks"] = max_blocks
 
-            # 余额
             old_bal = old.get("balance", 0)
             if balance != old_bal:
                 diff = balance - old_bal
@@ -447,19 +493,16 @@ class WatchManager:
                 msgs.append(f"💰 {display} 余额 {old_bal}→{balance}G ({sign}{diff}G)")
                 old["balance"] = balance
 
-            # 市长
             old_mayor = old.get("mayor", "")
             if mayor != old_mayor:
                 msgs.append(f"👤 {display} 市长 {old_mayor}→{mayor}")
                 old["mayor"] = mayor
 
-            # 国家
             old_nation = old.get("nation", "")
             if nation != old_nation:
                 msgs.append(f"🏰 {display} 国家 {old_nation}→{nation}")
                 old["nation"] = nation
 
-            # 开放/废墟状态
             is_open_old = old.get("is_open", None)
             if is_open_old is not None and is_open != is_open_old:
                 msgs.append(f"🚪 {display} {'开放' if is_open else '关闭'}")
@@ -474,20 +517,15 @@ class WatchManager:
             if msgs:
                 changed = True
                 try:
-                    await self._send(
-                        umo, MessageChain().message("\n".join(msgs)))
+                    await self._send(umo, MessageChain().message("\n".join(msgs)))
                 except Exception as e:
                     logger.error(f"[EarthMC] Watch 城镇发送失败: {e}")
 
-        if renames:
-            for old_key, new_key in renames.items():
-                if old_key in watched and new_key not in watched:
-                    watched[new_key] = watched.pop(old_key)
-            changed = True
+            migrated[uid] = old
 
         if changed:
             config = self.load_config()
             gw = config.get(group_id)
             if gw:
-                gw["towns"] = watched
+                gw["towns"] = migrated
                 self.save_config(config)
