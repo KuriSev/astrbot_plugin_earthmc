@@ -205,3 +205,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# 本地 AI 辅助说明，不进仓库
+CLAUDE.md
+.claude/
