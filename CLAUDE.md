@@ -26,7 +26,11 @@ docker logs -f astrbot | grep -i earthmc
 
 提交在本仓库（`origin` = `KuriSev/astrbot_plugin_earthmc`）里做；`metadata.yaml` 的 `version` 与 `CHANGELOG.md` 同步维护。
 
-**分支模型：`dev` 是唯一开发分支，`master` 只做发布快照。** GitHub 默认分支是 `master`（对外展示最新发布），日常开发全部提交到 `dev`；发版时才把 `master` fast-forward 到 `dev` 并推送。
+**分支模型：`dev` 是唯一开发分支，`master` 只做发布快照。** GitHub 默认分支是 `master`（对外展示最新发布），日常开发全部提交到 `dev`。
+
+- **他人贡献一律 PR 到 `dev`**，不要直接改动或 PR 到 `master`。
+- **只有仓库所有者**在发版时把 `master` fast-forward 到 `dev` 并推送。
+- `master` 上**不能出现 merge commit**：用 GitHub 的 PR 合并按钮（默认 "Create a merge commit"）会生成 `Merge pull request #N`，导致 `master` 与 `dev` 分叉、后续 `--ff-only` 直接失败。历史已经出现过一次（`af5f33b`），需要所有者手动把 `master` 重置回 `dev` 的祖先提交。
 
 ```bash
 # 日常
