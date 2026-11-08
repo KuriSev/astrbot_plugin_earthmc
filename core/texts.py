@@ -16,6 +16,8 @@ HELP_TEXT = """🌍 EarthMC 查询
   /em watch     使用 /em watch help 查看子命令
 ── 市场 ──
   /em market    使用 /em market 查看子命令
+── 配置自检 ──
+  /em test      检查当前 API Key 是否有效
 ━━━━━━━━━━━━━━━━
 别名: /t 城镇 · /n 国家 · /res 玩家 · /vp VP 提醒 · /mctop mcMMO 榜
 也可直接 @bot 用自然语言询问"""
@@ -77,3 +79,14 @@ _OP_ALIASES = {
     "del": "del", "delete": "del", "remove": "del", "删除": "del", "移除": "del",
     "reset": "reset", "重设": "reset",
 }
+
+API_KEY_REQUIRED = """❌ 未配置 EarthMC API Key，查询功能不可用
+
+请在 AstrBot WebUI → 插件管理 → EarthMC → 配置 里填写 api_key
+获取方式：游戏内执行 /api key create，删除用 /api key delete
+填好后点一次「重载」即可"""
+
+API_KEY_INVALID = """❌ EarthMC API Key 无效或查询失败
+
+官方自 2026-11-19 起对全部 API 端点校验 key。请确认插件配置里的 api_key 正确有效：
+可在游戏内执行 /api key create 重新生成，填好后点「重载」"""

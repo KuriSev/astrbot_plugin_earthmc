@@ -8,6 +8,7 @@ from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from .core.api import get, post, ts_str, mc_time, moon, weather, bool_emoji
+from .core.utils import fmt_coord, fmt_coord_pair
 
 
 
@@ -21,6 +22,23 @@ def _extract_discord(v) -> str:
             if val:
                 return str(val)
     return ""
+
+
+def _fmt_rank_lines(ranks, max_names: int = 12) -> list[str]:
+    """把 ranks（职位名 → [{name, uuid}]）渲染成「职位: 名字、名字」；空职位跳过。"""
+    lines = []
+    if not isinstance(ranks, dict):
+        return lines
+    for rank, members in ranks.items():
+        names = [m.get("name") for m in (members or [])
+                 if isinstance(m, dict) and m.get("name")]
+        if not names:
+            continue
+        shown = "、".join(names[:max_names])
+        if len(names) > max_names:
+            shown += "…"
+        lines.append(f"  {rank}: {shown}")
+    return lines
 
 
 def _names_list(v) -> list[str]:
@@ -78,7 +96,7 @@ class VotePartyTool(FunctionTool[AstrAgentContext]):
 @dataclass
 class TownTool(FunctionTool[AstrAgentContext]):
     name: str = "earthmc_town"
-    description: str = "查询 EarthMC 上指定城镇的详细信息：市长、所属国家、居民数、方块数、余额、坐标、开放状态等。"
+    description: str = "查询 EarthMC 上指定城镇的详细信息：市长、所属国家、居民数、方块数、余额、坐标、职位（rank）及成员、开放状态等。"
     parameters: dict = field(default_factory=lambda: {"type": "object", "properties": {"name": {"type": "string", "description": "城镇名称"}}, "required": ["name"]})
 
     async def call(self, context, name: str = "", **kwargs) -> str:
@@ -89,10 +107,12 @@ class TownTool(FunctionTool[AstrAgentContext]):
         t = data[0]; mayor = t.get("mayor",{}) or {}; nation = t.get("nation",{}) or {}
         stats = t.get("stats",{}) or {}; status = t.get("status",{}) or {}
         coord = (t.get("coordinates",{}) or {}).get("spawn", {})
-        coord_str = f"({coord.get('x','?')}, {coord.get('z','?')})" if coord else "?"
+        coord_str = fmt_coord_pair(coord.get("x"), coord.get("z")) if coord else "?"
         warps = [w.get("name","?") if isinstance(w, dict) else w
                  for w in (t.get("warps",[]) or [])]
         discord_str = _extract_discord(t.get("discord"))
+        rank_lines = _fmt_rank_lines(t.get("ranks"))
+        rank_block = ("🏛 职位:\n" + "\n".join(rank_lines) + "\n") if rank_lines else ""
         return (
             f"🏘 {t.get('name','?')}  {coord_str}\n━━━━━━━━━━━━━━━━\n"
             f"👤 市长: {mayor.get('name','?')}\n🏰 国家: {nation.get('name','无')}\n"
@@ -101,6 +121,7 @@ class TownTool(FunctionTool[AstrAgentContext]):
             f"🧱 方块: {stats.get('numTownBlocks','?')}/{stats.get('maxTownBlocks','?')}  "
             f"💰 {stats.get('balance','?')} G\n"
             f"📍 传送点: {', '.join(warps[:8]) if warps else '无'}\n"
+            f"{rank_block}"
             f"{'🔗 Discord: ' + discord_str + '\n' if discord_str else ''}"
             f"━━━━━━━━━━━━━━━━\n"
             f"开放: {bool_emoji(status.get('isOpen'))}  公共: {bool_emoji(status.get('isPublic'))}  "
@@ -114,7 +135,7 @@ class TownTool(FunctionTool[AstrAgentContext]):
 @dataclass
 class NationTool(FunctionTool[AstrAgentContext]):
     name: str = "earthmc_nation"
-    description: str = "查询 EarthMC 上指定国家的详细信息：国王、首都、城镇列表、居民数、盟友、敌对国、国家加成(nation bonus)、禁运、条约、余额等。"
+    description: str = "查询 EarthMC 上指定国家的详细信息：国王、首都、城镇列表、居民数、国家职位（rank）及成员、盟友、敌对国、国家加成(nation bonus)、禁运、条约、余额等。"
     parameters: dict = field(default_factory=lambda: {"type": "object", "properties": {"name": {"type": "string", "description": "国家名称"}}, "required": ["name"]})
 
     async def call(self, context, name: str = "", **kwargs) -> str:
@@ -125,7 +146,7 @@ class NationTool(FunctionTool[AstrAgentContext]):
         n = data[0]; king = n.get("king",{}) or {}; capital = n.get("capital",{}) or {}
         stats = n.get("stats",{}) or {}; status = n.get("status",{}) or {}
         coord = (n.get("coordinates",{}) or {}).get("spawn", {})
-        coord_str = f"({coord.get('x','?')}, {coord.get('z','?')})" if coord else "?"
+        coord_str = fmt_coord_pair(coord.get("x"), coord.get("z")) if coord else "?"
         towns = [t.get("name","?") for t in (n.get("towns",[]) or [])]
         allies = [a.get("name","?") for a in (n.get("allies",[]) or [])]
         enemies = [e.get("name","?") for e in (n.get("enemies",[]) or [])]
@@ -145,12 +166,15 @@ class NationTool(FunctionTool[AstrAgentContext]):
             if isinstance(p, dict):
                 pact_names.append(f"{p.get('sender','?')}↔{p.get('receiver','?')}")
         discord_str = _extract_discord(n.get("discord"))
+        rank_lines = _fmt_rank_lines(n.get("ranks"))
+        rank_block = ("🏛 职位:\n" + "\n".join(rank_lines) + "\n") if rank_lines else ""
         return (
             f"🏰 {n.get('name','?')}  {coord_str}\n━━━━━━━━━━━━━━━━\n"
             f"👑 国王: {king.get('name','?')}\n🏛 首都: {capital.get('name','无')}\n"
             f"📝 公告: {n.get('board','无') or '无'}\n━━━━━━━━━━━━━━━━\n"
             f"🏘 城镇({stats.get('numTowns','?')}): {', '.join(towns[:12])}{'...' if len(towns) > 12 else ''}\n"
             f"👥 居民: {stats.get('numResidents','?')}  💰 {stats.get('balance','?')} G\n"
+            f"{rank_block}"
             f"{bonus_str}\n"
             f"🤝 盟友: {', '.join(allies[:6]) if allies else '无'}\n"
             f"⚔ 敌对: {', '.join(enemies[:6]) if enemies else '无'}\n"
@@ -368,12 +392,14 @@ class MapPlayerTool(FunctionTool[AstrAgentContext]):
                 with open(path, "wb") as f:
                     f.write(buf.read())
                 await _send_map_image(context, path)
-                return f"🗺 {pdata['name']} 在线，位于 ({pdata['x']}, {pdata['z']})"
+                return (f"🗺 {pdata['name']} 在线，位于 "
+                        f"{fmt_coord_pair(pdata['x'], pdata['z'])}")
             except Exception:
-                return (f"🗺 {pdata['name']} 在线 ({pdata['x']}, {pdata['z']})\n"
+                return (f"🗺 {pdata['name']} 在线 "
+                        f"{fmt_coord_pair(pdata['x'], pdata['z'])}\n"
                         f"⚠ 截图失败，点击查看: "
                         f"https://map.earthmc.net/?world=minecraft_overworld"
-                        f"&x={pdata['x']}&z={pdata['z']}&zoom=3")
+                        f"&x={fmt_coord(pdata['x'])}&z={fmt_coord(pdata['z'])}&zoom=3")
 
         data = await api_post("/players", {"query": [name]})
         if not data or not isinstance(data, list) or len(data) == 0:

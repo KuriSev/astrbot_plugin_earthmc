@@ -275,6 +275,10 @@ class RuinsChecker:
 
         pushed = 0
         if sched <= sec < sched + _PUSH_GRACE_SECONDS:
+            # 推送前强制刷新：保证推送内容与推送时刻一致，而不是用最多 1 小时前的快照
+            cfg, _ = await self.refresh(now)
+            self._last_refresh = now
+            dirty = True
             for gid, g in cfg.items():
                 if not (g.get("nations") or g.get("towns")):
                     continue
@@ -472,6 +476,101 @@ class RuinsChecker:
                 lines.append(current or "未知国家")
             lines.append(self._line(st, now))
         return "\n".join(lines)
+
+    async def live_status(self, gid: str, now_ms: int | None = None) -> str:
+        """裸 /em risk：实时拉取关注范围的最新数据后渲染（只读，不写回快照）。"""
+        now = now_ms if now_ms is not None else _now_ms()
+        g = self.manager.load().get(str(gid), {})
+        raw_nations = g.get("nations") or {}
+        nations = (list(raw_nations.values()) if isinstance(raw_nations, dict)
+                   else [str(n) for n in raw_nations])
+        towns = g.get("towns") or {}
+        town_names = (list(towns.values()) if isinstance(towns, dict) else list(towns))
+        if not nations and not town_names:
+            return ("📋 废墟关注列表为空\n"
+                    "添加国家: /em risk nation add <国家>\n"
+                    "添加城镇: /em risk town add <城镇>")
+
+        if not (g.get("state") or {}):
+            # 还没有任何快照（首次使用/被清空）：退回一次完整刷新
+            cfg, _ = await self.refresh(now)
+            self._last_refresh = now
+            g = cfg.get(str(gid), g)
+
+        state, stale = await self._live_state(g, now)
+        lines = [f"📋 废墟关注 · 每天 {self.push_hour:02d}:{self.push_minute:02d} 推送"
+                 f"（窗口 {self.alert_days} 天）",
+                 f"实时数据 · {fmt_cn(now)}"
+                 + (f"（{stale} 个城镇沿用上次快照）" if stale else "")]
+        if nations:
+            lines.append("国家：" + "、".join(nations))
+        if town_names:
+            lines.append("城镇：" + "、".join(str(t) for t in town_names))
+
+        items = self._window_items({"state": state}, now)
+        if not items:
+            lines.append("窗口内暂无城镇")
+            return "\n".join(lines)
+
+        current = None
+        for ev, st in items:
+            if st.get("nation") != current:
+                current = st.get("nation")
+                lines.append(current or "未知国家")
+            lines.append(self._line(st, now))
+        return "\n".join(lines)
+
+    async def _live_state(self, g: dict, now: int) -> tuple[dict[str, dict], int]:
+        """按快照里的城镇 uuid 实时重算；返回 (state, 沿用快照的条数)。"""
+        snap = g.get("state") or {}
+        keys = [k for k in snap if is_uuid(k)]
+        if not keys:
+            return {}, 0
+
+        t_by_uuid = await self._fetch_towns(keys)
+        residents = {r["name"] for t in t_by_uuid.values()
+                     for r in (t.get("residents") or []) if r.get("name")}
+        p_map = await self._fetch("/players", sorted(residents, key=str.lower))
+
+        out: dict[str, dict] = {}
+        for uid, td in t_by_uuid.items():
+            e = analyze_ruins(td, p_map, now)
+            if not e:
+                continue
+            out[uid] = {
+                "name": e.town, "nation": e.nation, "mayor": e.mayor_name,
+                "is_open": e.is_open, "ruined": e.ruined, "missing": e.missing,
+                "mayor_unknown": e.mayor_unknown,
+                "ruins_at": e.ruins_at, "mayor_event_at": e.mayor_event_at,
+                "updated_at": now,
+            }
+
+        # 网络抖动时 post 会返回 None，这一批城镇就查不到；用上次快照兜底，
+        # 避免卡片因为一次请求超时少掉几十个城镇。
+        stale = 0
+        for uid in keys:
+            if uid in out:
+                continue
+            st = snap.get(uid)
+            if st:
+                out[uid] = st
+                stale += 1
+        return out, stale
+
+    async def _fetch_towns(self, keys: list[str]) -> dict[str, dict]:
+        """按 uuid 批量查城镇；对漏掉的再重试一轮（API 偶发超时）。"""
+        got: dict[str, dict] = {}
+        todo = list(keys)
+        for attempt in (0, 1):
+            if not todo:
+                break
+            if attempt:
+                await asyncio.sleep(0.5)
+            for t in await post_chunked("/towns", todo, batch=100):
+                if t.get("uuid"):
+                    got[t["uuid"]] = t
+            todo = [k for k in todo if k not in got]
+        return got
 
     def added_text(self, gid: str, kind: str, key: str, name: str,
                    found: dict, now_ms: int | None = None) -> str:

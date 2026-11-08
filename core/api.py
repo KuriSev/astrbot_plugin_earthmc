@@ -35,6 +35,47 @@ def configure(cache_ttl: int | None = None,
 _session: aiohttp.ClientSession | None = None
 _cache: dict[str, tuple[dict, float]] = {}
 _API_KEY = ""
+_key_missing_logged = False
+_auth_failed_at = 0.0          # 最近一次 401/403 的时间戳
+_AUTH_ERROR_TTL = 300.0        # 5 分钟内视为 key 仍然无效
+
+
+def auth_error_active() -> bool:
+    """最近一次请求是否因 key 无效被拒（5 分钟内有效）。"""
+    return _auth_failed_at > 0 and (_time.time() - _auth_failed_at) < _AUTH_ERROR_TTL
+
+
+def _note_auth_error() -> bool:
+    """记录一次 401/403，返回是否为本轮第一次（用于日志节流）。"""
+    global _auth_failed_at
+    first = not auth_error_active()
+    _auth_failed_at = _time.time()
+    return first
+
+
+def _note_auth_ok() -> None:
+    """请求成功即清除失败标记，避免窗口过期后再误报一次。"""
+    global _auth_failed_at
+    _auth_failed_at = 0.0
+
+
+def has_api_key() -> bool:
+    """是否已配置 api_key（必填项）。"""
+    return bool(_API_KEY)
+
+
+def _ensure_key() -> bool:
+    """API key 未配置时跳过请求，并且只记一次错误日志。"""
+    global _key_missing_logged
+    if _API_KEY:
+        return True
+    if not _key_missing_logged:
+        logger.error(
+            "[EarthMC] 未配置 api_key，API 请求已跳过"
+            "（插件配置 → api_key，游戏内 /api key create 获取）"
+        )
+        _key_missing_logged = True
+    return False
 
 
 def _headers() -> dict | None:
@@ -70,6 +111,8 @@ async def close_session():
 
 async def get(path: str, *, force: bool = False) -> dict | list | None:
     """带缓存的 GET 请求。force=True 跳过缓存（watch 用）。"""
+    if not _ensure_key():
+        return None
     if not force:
         cached = _cache.get(path)
         if cached:
@@ -79,12 +122,27 @@ async def get(path: str, *, force: bool = False) -> dict | list | None:
     try:
         session = await _get_session()
         async with session.get(f"{BASE_URL}{path}", headers=_headers()) as resp:
+            if resp.status in (401, 403):
+                first = _note_auth_error()
+                text = await resp.text()
+                if first:
+                    logger.error(
+                        f"[EarthMC] GET {path} → HTTP {resp.status}"
+                        f"（{text[:120].strip()}）：API key 无效或未生效，"
+                        "请在插件配置更新 api_key（游戏内 /api key create）后重载"
+                    )
+                else:
+                    logger.debug(
+                        f"[EarthMC] GET {path} → HTTP {resp.status}：key 仍然无效"
+                    )
+                return None
             if resp.status >= 400:
                 text = await resp.text()
                 logger.warning(f"[EarthMC] GET {path} → HTTP {resp.status}: {text[:100]} "
                                f"({_key_hint()})")
                 return None
             data = await resp.json(content_type=None)
+            _note_auth_ok()
             _cache[path] = (data, _time.time())
             return data
     except Exception as e:
@@ -92,16 +150,64 @@ async def get(path: str, *, force: bool = False) -> dict | list | None:
         return None
 
 
+async def check_api_key() -> tuple[str, str]:
+    """用 /mcmmo-top 验证 key 是否有效。
+
+    返回 (状态, 服务器原文)，状态取值：
+      no_key / ok / rate_limited / invalid / error
+    429 说明限流是按 key 计的，能走到限流即说明 key 被认可。
+    """
+    if not _API_KEY:
+        return "no_key", ""
+    try:
+        session = await _get_session()
+        async with session.post(
+            f"{BASE_URL}/mcmmo-top",
+            json={"query": ["FISHING"], "key": _API_KEY},
+            headers=_headers(),
+        ) as resp:
+            text = (await resp.text())[:160].strip()
+            if resp.status == 200:
+                _note_auth_ok()
+                return "ok", text
+            if resp.status == 429:
+                _note_auth_ok()
+                return "rate_limited", text
+            if resp.status in (401, 403):
+                _note_auth_error()
+                return "invalid", text
+            return "error", f"HTTP {resp.status} {text}".strip()
+    except Exception as e:  # noqa: BLE001
+        return "error", f"{type(e).__name__}: {e}"[:160]
+
+
 async def post(path: str, body: dict) -> dict | list | None:
+    if not _ensure_key():
+        return None
     try:
         session = await _get_session()
         async with session.post(f"{BASE_URL}{path}", json=body,
                                 headers=_headers()) as resp:
+            if resp.status in (401, 403):
+                first = _note_auth_error()
+                text = await resp.text()
+                if first:
+                    logger.error(
+                        f"[EarthMC] POST {path} → HTTP {resp.status}"
+                        f"（{text[:120].strip()}）：API key 无效或未生效，"
+                        "请在插件配置更新 api_key（游戏内 /api key create）后重载"
+                    )
+                else:
+                    logger.debug(
+                        f"[EarthMC] POST {path} → HTTP {resp.status}：key 仍然无效"
+                    )
+                return None
             if resp.status >= 400:
                 text = await resp.text()
                 logger.warning(f"[EarthMC] POST {path} → HTTP {resp.status}: {text[:100]} "
                                f"({_key_hint()})")
                 return None
+            _note_auth_ok()
             return await resp.json(content_type=None)
     except Exception as e:
         logger.error(f"[EarthMC] POST {path} → {e}")

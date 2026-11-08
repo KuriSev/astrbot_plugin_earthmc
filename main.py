@@ -8,10 +8,12 @@ from astrbot.api import logger
 from astrbot.api import AstrBotConfig
 
 from .core import store
-from .core.api import close_session, configure as api_configure
-from .core.texts import HELP_TEXT, RISK_HELP
+from .core.api import (close_session, configure as api_configure,
+                       has_api_key, auth_error_active)
+from .core.texts import HELP_TEXT, RISK_HELP, API_KEY_REQUIRED, API_KEY_INVALID
 from .commands.query import (
     ALL_TOOLS, TOOL_MAP, _run_tool, _first_token, _run_location,
+    _check_api_key_text,
 )
 from .commands.vp import VPMixin
 from .commands.watch import WatchCommandMixin
@@ -118,16 +120,36 @@ class EarthMCPlugin(
             "/astrbot_plugin_earthmc/watch/off",
             self._api_watch_off, ["POST"], "关闭某群 watch")
 
-        try:
-            self.context.add_llm_tools(*ALL_TOOLS)
-            logger.info("[EarthMC] 已注册 16 个 LLM 工具")
-        except Exception as e:
-            logger.warning(f"[EarthMC] LLM 工具注册失败: {e}")
+        if not has_api_key():
+            logger.error(
+                "[EarthMC] 未配置 api_key：查询命令与 LLM 工具均不可用。"
+                "请在 WebUI 插件配置中填写（游戏内 /api key create 获取）后重载插件。"
+            )
+        else:
+            try:
+                self.context.add_llm_tools(*ALL_TOOLS)
+                logger.info(f"[EarthMC] 已注册 {len(ALL_TOOLS)} 个 LLM 工具")
+            except Exception as e:
+                logger.warning(f"[EarthMC] LLM 工具注册失败: {e}")
 
-        # watch 在 __init__ 直接启动，确保重载插件后也能恢复
+        # watch / 废墟关注在 __init__ 直接启动，确保重载插件后也能恢复
+        # （on_astrbot_loaded 只在 AstrBot 启动时触发一次，重载插件不会再触发）
         self.watch.start()
+        try:
+            self.ruins_checker.start()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[EarthMC] 废墟关注后台任务启动失败: {e}")
 
     # ── 命令调度 ──────────────────────
+
+    @staticmethod
+    def _api_key_problem() -> str:
+        """返回需要提示的 key 问题文案；空串表示可用。"""
+        if not has_api_key():
+            return API_KEY_REQUIRED
+        if auth_error_active():
+            return API_KEY_INVALID
+        return ""
 
     def _cmd_prelude(self, event: AstrMessageEvent, names: tuple):
         """命令公共前置：记录会话、检查功能开关、剥离命令前缀（兼容带不带 /）。
@@ -172,6 +194,18 @@ class EarthMCPlugin(
 
         if sub == "help":
             yield event.plain_result(HELP_TEXT)
+            event.stop_event()
+            return
+
+        # 自检命令不受 key 检查拦截，否则永远看不到检测结果
+        if sub == "test":
+            yield event.plain_result(await _check_api_key_text())
+            event.stop_event()
+            return
+
+        problem = self._api_key_problem()
+        if problem:
+            yield event.plain_result(problem)
             event.stop_event()
             return
 
@@ -267,6 +301,11 @@ class EarthMCPlugin(
             return
         uid, text = pre
         self._pending_confirm.pop(uid, None)
+        problem = self._api_key_problem()
+        if problem:
+            yield event.plain_result(problem)
+            event.stop_event()
+            return
         if not text:                       # 裸 /vp → 查询进度
             yield event.plain_result(await VotePartyTool().call(None))
             event.stop_event()
@@ -287,6 +326,11 @@ class EarthMCPlugin(
             return
         uid, text = pre
         self._pending_confirm.pop(uid, None)
+        problem = self._api_key_problem()
+        if problem:
+            yield event.plain_result(problem)
+            event.stop_event()
+            return
         yield event.plain_result(await _run_tool(PlayerTool, _first_token(text)))
         event.stop_event()
 
@@ -298,6 +342,11 @@ class EarthMCPlugin(
             return
         uid, text = pre
         self._pending_confirm.pop(uid, None)
+        problem = self._api_key_problem()
+        if problem:
+            yield event.plain_result(problem)
+            event.stop_event()
+            return
         yield event.plain_result(await _run_tool(TownTool, _first_token(text)))
         event.stop_event()
 
@@ -309,6 +358,11 @@ class EarthMCPlugin(
             return
         uid, text = pre
         self._pending_confirm.pop(uid, None)
+        problem = self._api_key_problem()
+        if problem:
+            yield event.plain_result(problem)
+            event.stop_event()
+            return
         yield event.plain_result(await _run_tool(NationTool, _first_token(text)))
         event.stop_event()
 
@@ -320,6 +374,11 @@ class EarthMCPlugin(
             return
         uid, text = pre
         self._pending_confirm.pop(uid, None)
+        problem = self._api_key_problem()
+        if problem:
+            yield event.plain_result(problem)
+            event.stop_event()
+            return
         yield event.plain_result(await _run_tool(McMMOTopTool, _first_token(text)))
         event.stop_event()
 

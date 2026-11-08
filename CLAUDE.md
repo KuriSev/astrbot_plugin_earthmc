@@ -45,10 +45,11 @@ git checkout dev
 - **双入口**：`main.py` 的 `/em` 命令族（含顶层别名 `/vp` `/t` `/n` `/res`）与 `tools.py` 的 LLM FunctionTool，两者共享 `core/api.py` 的请求/缓存层。
 - **目录分层**：`main.py`（入口 + 装饰器）→ `commands/`（命令实现 Mixin）→ `features/`（业务能力）→ `core/`（HTTP、落盘、文案）。**`@filter.*` 只能写在 `main.py`**，AstrBot 按 `handler.__module__` 绑定实例，搬走即静默失效。
 - **`features/watch.py`**：后台监控（VP 阈值 / 玩家上下线与城镇变动 / 城镇变动），状态在 `earthmc_watch.json`，按群隔离。**玩家与城镇都以 uuid 为键、名字只作显示**（`/online`、`/players`、`/towns` 均返回 uuid，且 `query` 接受 uuid）。
-- **`features/ruins_watch.py`**：废墟关注（国家/城镇，同样 uuid 键）。每 60 秒 tick、**每小时刷新快照**、**每天 `ruins_push_hour:ruins_push_minute`（UTC+8）推送一次**窗口内城镇；到点未发不补发。裸 `/em risk` 读快照出状态卡。
-- **`features/risk.py`**：变废墟时间计算（`analyze_ruins`：最后居民 lastOnline + 42 天 → 下一个 UTC 00:00；城主两种分支）与 `/em risk town` 渲染。
+- **`features/ruins_watch.py`**：废墟关注（国家/城镇，同样 uuid 键）。每 60 秒 tick、**每小时刷新快照**、**每天 `ruins_push_hour:ruins_push_minute`（UTC+8）推送前再强制刷新一次**再推窗口内城镇；到点未发不补发。裸 `/em risk` **实时拉数据出状态卡（只读，不写回快照）**，查不到的城镇沿用上次快照并标注。`RuinsChecker.start()` 在 `__init__` 启动——`on_astrbot_loaded` 重载后不会再触发，只放那里会让刷新/推送静默停摆。
+- **`features/risk.py`**：变废墟时间计算（`analyze_ruins`：最后居民 lastOnline + 42 天 → 下一个**每日结算点 UTC 10:00 = UTC+8 18:00**；城主两种分支）与 `/em risk town` 渲染。日界常量是 `DAY_BOUNDARY_HOUR_UTC = 10`，别改回 UTC 00:00（由 `timestamps.ruinedAt` 统计确认）。
 - **全服扫描已移除**：没有 `scanner.py`、`/em risk scan`、`/em risk list`，risk 只针对指定城镇/国家。
 - **API 批量上限**：`/towns`、`/players` 单次 query 超过约 100 会被截断，批量请求一律用 `core/api.py::post_chunked`（50/批）。
 - **`features/mcmmo.py`** 独立于主流程，需 `api_key`（放**请求体**而非 header，技能名大写白名单），结果缓存 180s。
 - **命名**：查询不区分大小写、直接透传；**比较两侧都 `.lower()`，显示用服务端规范名**；监控/关注的**存储键是 uuid**。细节见 `../docs/earthmc-plugin.md`「名称大小写约定」。
+- **坐标**：API 的 `coordinates.spawn` 是小数，展示一律转方块坐标——**向下取整**（`-3829.3 → -3830`），统一用 `core/utils.py::fmt_coord` / `fmt_coord_pair`，别用 `int()`（负数是向零截断，会差一格）。
 - **时区**：`ruins_push_hour` / `ruins_push_minute` / `/em vp dnd` 一律 UTC+8；容器时钟是 UTC，用 `datetime.now(timezone.utc) + timedelta(hours=8)`，别用裸 `datetime.now()`。

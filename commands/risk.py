@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from astrbot.api.event import AstrMessageEvent
 
-from ..core.texts import RISK_HELP
+from ..core.api import auth_error_active
+from ..core.texts import RISK_HELP, API_KEY_INVALID
 
 _ADD_OPS = {"add", "添加"}
 _DEL_OPS = {"del", "delete", "remove", "删除", "移除"}
@@ -26,7 +27,11 @@ class RiskMixin:
             checker = getattr(self, "ruins_checker", None)
             if checker is None:
                 return "❌ 废墟关注未初始化。"
-            return checker.status_text(str(gid))
+            # 手动查询直接拉最新数据（只读，不改写快照）
+            live = getattr(checker, "live_status", None)
+            text = (await live(str(gid)) if live is not None
+                    else checker.status_text(str(gid)))
+            return API_KEY_INVALID if auth_error_active() else text
 
         if action in ("town", "nation"):
             op, _, name = value.partition(" ")
@@ -42,9 +47,11 @@ class RiskMixin:
                         else "❌ 用法: /em risk nation <国家名>")
             if action == "town":
                 from ..features.risk import _calc_risk
-                return await _calc_risk(value)
-            from ..features.risk import _nation_risk
-            return await _nation_risk(value)
+                text = await _calc_risk(value)
+            else:
+                from ..features.risk import _nation_risk
+                text = await _nation_risk(value)
+            return API_KEY_INVALID if auth_error_active() else text
 
         return ("❌ 用法:\n"
                 "  /em risk                查看废墟关注状态\n"
@@ -70,6 +77,8 @@ class RiskMixin:
             # 先解析 uuid：改名不影响关注，名字只用于显示
             from ..core.api import post as api_post
             data = await api_post("/towns", {"query": [name]})
+            if auth_error_active():
+                return API_KEY_INVALID
             if not data or not isinstance(data, list) or not data:
                 return f"❌ 未找到城镇「{name}」，未加入关注。"
             t = data[0]
@@ -81,6 +90,8 @@ class RiskMixin:
         else:
             from ..core.api import post as api_post
             data = await api_post("/nations", {"query": [name]})
+            if auth_error_active():
+                return API_KEY_INVALID
             if not data or not isinstance(data, list) or not data:
                 return f"❌ 未找到国家「{name}」，未加入关注。"
             n = data[0]

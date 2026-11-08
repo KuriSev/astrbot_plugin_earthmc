@@ -33,13 +33,23 @@ def fmt_cn(ms: int | None) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=_TZ_CN).strftime("%Y-%m-%d %H:%M")
 
 
-def next_utc_midnight(ts_ms: int) -> int:
-    """返回第一个 >= ts_ms 的 UTC 00:00（毫秒）；正好 00:00 时返回自身。"""
+# EarthMC 每日结算在 UTC 10:00 = UTC+8 18:00。
+# 依据：/towns 的 timestamps.ruinedAt 统计，69 个已废墟城镇中 45 个恰好落在这个点，
+# 其余为建国/删国等非自然结算造成的散点。
+DAY_BOUNDARY_HOUR_UTC = 10
+
+
+def next_day_boundary(ts_ms: int) -> int:
+    """返回第一个 >= ts_ms 的每日结算时刻（UTC 10:00 = UTC+8 18:00）；正好整点时返回自身。"""
     dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
-    midnight = dt.replace(hour=0, minute=0, second=0, microsecond=0)
-    if dt > midnight:
-        midnight += timedelta(days=1)
-    return int(midnight.timestamp() * 1000)
+    boundary = dt.replace(hour=DAY_BOUNDARY_HOUR_UTC, minute=0, second=0, microsecond=0)
+    if dt > boundary:
+        boundary += timedelta(days=1)
+    return int(boundary.timestamp() * 1000)
+
+
+# 兼容旧名（历史调用/测试）
+next_utc_midnight = next_day_boundary
 
 
 @dataclass
@@ -68,7 +78,7 @@ class RuinsEstimate:
 
 
 def analyze_ruins(town: dict, p_map: dict[str, dict], now_ms: int) -> RuinsEstimate:
-    """按 UTC 00:00 日界计算变废墟时间与城主分支。
+    """按每日结算点（UTC 10:00 = UTC+8 18:00）计算变废墟时间与城主分支。
 
     规则：`/players` 查不到的居民一律视为 inactive，不参与 max(lastOnline)。
     """
@@ -99,7 +109,7 @@ def analyze_ruins(town: dict, p_map: dict[str, dict], now_ms: int) -> RuinsEstim
 
     last_online = max(a.last_online for a in visible)
     t42 = last_online + _INACTIVE_MS
-    est.ruins_at = next_utc_midnight(max(t42, now_ms))
+    est.ruins_at = next_day_boundary(max(t42, now_ms))
 
     mayor_act = next((a for a in acts if a.is_mayor), None)
     m_lo = mayor_act.last_online if mayor_act else None
@@ -109,7 +119,7 @@ def analyze_ruins(town: dict, p_map: dict[str, dict], now_ms: int) -> RuinsEstim
     # 城主数据不可用时按“未知”处理：不预测转让
     if not est.mayor_unknown and not est.mayor_is_last:
         base = now_ms if est.mayor_expired else max(m_lo + _INACTIVE_MS, now_ms)
-        est.mayor_event_at = next_utc_midnight(base)
+        est.mayor_event_at = next_day_boundary(base)
     return est
 
 
