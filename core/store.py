@@ -54,5 +54,18 @@ def load_feature_config(uid: str) -> dict:
         return {"features": {}}
 
 
+# 功能开关默认值：配置里没写的键按这里取值
+# 扩展查询（附近城镇/坐标归属/领地/地图截图）默认关闭，需在 WebUI 插件页面手动开启
+FEATURE_DEFAULTS = {
+    "commands": True,
+    "watch": True,
+    "market": True,
+    "map": False,
+    "nearby": False,
+    "location": False,
+    "quarter": False,
+}
+
+
 def feature_enabled(cfg: dict, key: str) -> bool:
-    return cfg.get("features", {}).get(key, True)  # 默认开启
+    return bool(cfg.get("features", {}).get(key, FEATURE_DEFAULTS.get(key, True)))

@@ -10,7 +10,8 @@ from astrbot.api import AstrBotConfig
 from .core import store
 from .core.api import (close_session, configure as api_configure,
                        has_api_key, auth_error_active)
-from .core.texts import HELP_TEXT, RISK_HELP, API_KEY_REQUIRED, API_KEY_INVALID
+from .core.texts import (HELP_TEXT, RISK_HELP, API_KEY_REQUIRED, API_KEY_INVALID,
+                         FEATURE_DISABLED)
 from .commands.query import (
     ALL_TOOLS, TOOL_MAP, _run_tool, _first_token, _run_location,
     _check_api_key_text,
@@ -209,6 +210,15 @@ class EarthMCPlugin(
             event.stop_event()
             return
 
+        # 扩展查询默认关闭，需在 WebUI 插件页面按会话开启
+        _optional = {"nearby": "附近城镇", "location": "坐标归属",
+                     "quarter": "领地", "map": "地图截图"}
+        if sub in _optional and not store.feature_enabled(
+                store.load_feature_config(uid), sub):
+            yield event.plain_result(FEATURE_DISABLED.format(name=_optional[sub]))
+            event.stop_event()
+            return
+
         if sub in ("confirm", "cancel"):
             result = (self._handle_confirm(event) if sub == "confirm"
                       else self._handle_cancel(event))
@@ -242,8 +252,10 @@ class EarthMCPlugin(
             return
 
         if sub == "risk":
+            # 裸 /em risk → 状态卡；/em risk help → 用法
             if not arg:
-                yield event.plain_result(RISK_HELP)
+                yield event.plain_result(
+                    await self._handle_risk(event, "status", ""))
                 event.stop_event()
                 return
             value = f"{arg2} {arg3}".strip() if arg3 else arg2

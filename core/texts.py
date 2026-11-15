@@ -10,7 +10,7 @@ HELP_TEXT = """🌍 EarthMC 查询
 ── 路径点 ──
   /em wp              使用 /em wp help 查看子命令
 ── 分析 ──
-  /em risk      使用 /em risk help 查看子命令
+  /em risk      查看废墟关注状态（/em risk help 看子命令）
 ── 监控 ──
   /em vp        使用 /em vp help 查看子命令
   /em watch     使用 /em watch help 查看子命令
@@ -27,7 +27,8 @@ RISK_HELP = """销城分析:
   /em risk town <名>             单镇评估（含变废墟时间）
   /em risk nation <名>           国家销城情况
   /em risk town add|del <名>     关注/取消关注城镇
-  /em risk nation add|del <名>   关注/取消关注国家"""
+  /em risk nation add|del <名>   关注/取消关注国家
+  /em risk help                  查看本帮助"""
 
 MARKET_HELP = """市场交易:
   /em market list                   查看全部
@@ -90,3 +91,5 @@ API_KEY_INVALID = """❌ EarthMC API Key 无效或查询失败
 
 官方自 2026-11-19 起对全部 API 端点校验 key。请确认插件配置里的 api_key 正确有效：
 可在游戏内执行 /api key create 重新生成，填好后点「重载」"""
+
+FEATURE_DISABLED = "⚠ 功能未开启"

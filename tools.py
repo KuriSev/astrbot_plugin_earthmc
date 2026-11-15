@@ -267,21 +267,47 @@ class LocationTool(FunctionTool[AstrAgentContext]):
 @dataclass
 class QuarterTool(FunctionTool[AstrAgentContext]):
     name: str = "earthmc_quarter"
-    description: str = "查询 EarthMC 上指定领地（Quarter）的详细信息：类型、所有者、所属城镇、价格、体积等。"
-    parameters: dict = field(default_factory=lambda: {"type": "object", "properties": {"query": {"type": "string", "description": "领地名称或 UUID"}}, "required": ["query"]})
+    description: str = "查询 EarthMC 领地（Quarter）：传 UUID 返回该领地详情；传城镇名则列出该城镇的全部领地。"
+    parameters: dict = field(default_factory=lambda: {"type": "object", "properties": {"query": {"type": "string", "description": "领地 UUID，或所属城镇名（列出该镇领地）"}}, "required": ["query"]})
 
     async def call(self, context, query: str = "", **kwargs) -> str:
         query = (query or "").strip()
-        if not query: return "❌ 请提供领地名称。"
+        if not query: return "❌ 请提供领地 UUID 或城镇名。"
+        from .core.utils import is_uuid
+        if not is_uuid(query):
+            return await self._list_town_quarters(query)
         data = await post("/quarters", {"query": [query]})
         if not data or not isinstance(data, list) or len(data) == 0: return f"❌ 未找到领地「{query}」。"
         q = data[0]; owner = q.get("owner",{}) or {}; town = q.get("town",{}) or {}; stats = q.get("stats",{}) or {}
         return (
-            f"🏠 领地: {q.get('uuid','?')[:8]}...\n━━━━━━━━━━━━━━━━\n"
+            f"🏠 领地: {q.get('name') or str(q.get('uuid','?'))[:8]}\n"
+            f"━━━━━━━━━━━━━━━━\n"
             f"📦 类型: {q.get('type','?')}\n👤 所有者: {owner.get('name','无')}\n🏘 所属城镇: {town.get('name','?')}\n━━━━━━━━━━━━━━━━\n"
-            f"💰 价格: {stats.get('price','?')} G  📐 体积: {stats.get('volume','?')}\n"
+            f"💰 价格: {'未标价' if stats.get('price') is None else str(stats.get('price')) + ' G'}"
+            f"  📐 体积: {stats.get('volume','?')}\n"
             f"🧱 块数: {stats.get('numCuboids','?')}  🏳 大使馆: {bool_emoji(q.get('status',{}).get('isEmbassy'))}"
         )
+
+    async def _list_town_quarters(self, town_name: str) -> str:
+        """按城镇名列出其全部领地（/quarters 只接受 UUID，名字查不到）。"""
+        towns = await post("/towns", {"query": [town_name]})
+        if not towns or not isinstance(towns, list):
+            return (f"❌ 未找到「{town_name}」对应的领地或城镇。\n"
+                    "领地详情请用 UUID：/em quarter <领地UUID>")
+        t = towns[0]
+        quarters = t.get("quarters") or []
+        head = f"🏘 {t.get('name','?')} 的领地（{len(quarters)} 个）"
+        if not quarters:
+            return head + "\n该城镇没有登记领地。"
+        lines = [head, "━━━━━━━━━━━━━━━━"]
+        for i, q in enumerate(quarters[:15], 1):
+            name = q.get("name") or "（未命名）"
+            lines.append(f"  {i}. {name}  {str(q.get('uuid',''))[:8]}")
+        if len(quarters) > 15:
+            lines.append(f"  …另有 {len(quarters) - 15} 个")
+        lines.append("━━━━━━━━━━━━━━━━")
+        lines.append("查看详情: /em quarter <领地UUID>")
+        return "\n".join(lines)
 
 
 @dataclass

@@ -301,13 +301,15 @@ class WatchCommandMixin:
 
         pl = w.get("players")
         if pl:
-            parts.append(f"👤 玩家监控({len(pl)}): " + ", ".join(sorted(pl)))
+            names = sorted((v.get("name") or k) for k, v in pl.items())
+            parts.append(f"👤 玩家监控({len(pl)}): " + ", ".join(names))
         else:
             parts.append("👤 玩家监控: 未设置")
 
         tl = w.get("towns")
         if tl:
-            parts.append(f"🏘 城镇监控({len(tl)}): " + ", ".join(sorted(tl)))
+            names = sorted((v.get("name") or k) for k, v in tl.items())
+            parts.append(f"🏘 城镇监控({len(tl)}): " + ", ".join(names))
         else:
             parts.append("🏘 城镇监控: 未设置")
 

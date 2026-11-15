@@ -76,8 +76,12 @@ async function selectConfig(id, type) {
   const f = (c && c.features) || {};
   el("featWatch").checked = f.watch !== false;
   el("featMarket").checked = f.market !== false;
-  el("featMap").checked = f.map !== false;
   el("featCommands").checked = f.commands !== false;
+  // 扩展查询默认关闭
+  el("featMap").checked = f.map === true;
+  el("featNearby").checked = f.nearby === true;
+  el("featLocation").checked = f.location === true;
+  el("featQuarter").checked = f.quarter === true;
 
   featureDirty = false;
   vpDirty = false;
@@ -127,9 +131,13 @@ async function enterConfig(id, type) {
   el("editTitle").textContent = `${type === "friend" ? "私聊" : "群聊"}:${id}`;
   el("editType").value = type;
   el("editId").value = id;
-  ["featWatch", "featMarket", "featMap", "featCommands"].forEach((fid) => {
-    el(fid).checked = true;
-  });
+  el("featWatch").checked = true;
+  el("featMarket").checked = true;
+  el("featCommands").checked = true;
+  el("featMap").checked = false;
+  el("featNearby").checked = false;
+  el("featLocation").checked = false;
+  el("featQuarter").checked = false;
   featureDirty = false;
   vpDirty = false;
   updateDirtyBadge();
@@ -139,7 +147,8 @@ async function enterConfig(id, type) {
 
 // ── 功能开关 ─────────────────────
 
-["featWatch", "featMarket", "featMap", "featCommands"].forEach((fid) => {
+["featWatch", "featMarket", "featCommands", "featMap",
+ "featNearby", "featLocation", "featQuarter"].forEach((fid) => {
   el(fid).addEventListener("change", () => markDirty("feature"));
 });
 
@@ -149,8 +158,11 @@ el("saveFeatureBtn").addEventListener("click", async () => {
   const features = {
     watch: el("featWatch").checked,
     market: el("featMarket").checked,
-    map: el("featMap").checked,
     commands: el("featCommands").checked,
+    map: el("featMap").checked,
+    nearby: el("featNearby").checked,
+    location: el("featLocation").checked,
+    quarter: el("featQuarter").checked,
   };
   try {
     await bridge.apiPost("configs/save", {

@@ -130,9 +130,10 @@ class WebAPIMixin:
         resp = self._vp_payload(gid, w)      # 兼容：保留 vp 字段供旧缓存前端使用
         resp.update({
             "empty": False,
-            "players": {k: v.get("online", False)
+            # 以显示名为键（存储键是 uuid）；名字缺失时退回 uuid
+            "players": {(v.get("name") or k): v.get("online", False)
                         for k, v in (w.get("players") or {}).items()},
-            "towns": {k: {
+            "towns": {(v.get("name") or k): {
                 "resident_count": v.get("resident_count", "?"),
                 "blocks": v.get("blocks", "?"),
                 "maxBlocks": v.get("maxBlocks", "?"),

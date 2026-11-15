@@ -51,7 +51,7 @@
 | `/em online` | 当前在线玩家 |
 | `/em nearby <名>` | 城镇周边的领地分布 |
 | `/em location <x> <z>` | 坐标属于哪个城镇/国家 |
-| `/em quarter <名>` | 领地（Quarter）详情：类型、所有者、价格、体积 |
+| `/em quarter <UUID\|城镇名>` | 传 UUID 看领地详情；传城镇名列出该镇全部领地 |
 | `/em mm` | Mystery Master 排行榜 |
 | `/em mmo <技能>` · `/mctop <技能>` | mcMMO 技能榜前 25 名（支持中文技能名） |
 | `/em test` | 自检：当前 API Key 是否有效（会占用一次 mcMMO 查询配额） |
@@ -138,7 +138,8 @@ WebUI → 插件管理 → EarthMC → 配置：
 | `ruins_push_hour` | `18` | 每日推送时刻 · 时（**UTC+8**） |
 | `ruins_push_minute` | `0` | 每日推送时刻 · 分（**UTC+8**） |
 
-> 功能开关（VP、玩家/城镇监控等）按群/私聊保存在 `configs/` 下，可在 WebUI 的插件页面里按会话配置。
+> 功能开关按群/私聊保存在 `configs/` 下，可在 WebUI 的插件页面里按会话配置。
+> **`/em map`、`/em nearby`、`/em location`、`/em quarter` 默认关闭**，需要管理员在插件页面勾选后才会响应。
 
 ## 🏚 销城风险怎么算
 
