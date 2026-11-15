@@ -404,11 +404,6 @@ class EarthMCPlugin(
 
     # ── Watch 管理 API ──────────────────
 
-    @staticmethod
-    @staticmethod
-    @classmethod
-    # ── wp 子命令 ───────────────────
-
     # ── 生命周期 ──────────────────────
 
     @filter.on_astrbot_loaded()
